@@ -198,8 +198,96 @@ def get_db_path():
 def get_generated_numbers_db_path():
     """
     生成済み番号DBの配置先を取得します。
+    メインDBとは別ファイルにすることでロック競合を防止。
     """
-    return get_db_path()
+    username = getuser()
+    candidate_paths = [
+        f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\DB\\事前梱包依頼関連",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\DB\\事前梱包依頼関連",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\DB\\事前梱包依頼関連"
+    ]
+    for folder in candidate_paths:
+        if os.path.exists(folder):
+            return os.path.join(folder, "generated_numbers.db")
+    raise FileNotFoundError("適切なDB保存先フォルダが見つかりません。")
+
+
+class BatchDBConnection:
+    """
+    バッチ処理用のDB接続管理クラス。
+    複数件の処理を実行する際に、1つのDB接続を使い回すことで
+    OneDrive同期との競合による破損を防止します。
+    """
+    _instance = None
+    _conn = None
+    _generated_numbers_conn = None
+    _same_db = False  # メインDBと生成済み番号DBが同じかどうか
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def start_batch(self):
+        """バッチ処理開始時にDB接続を確立"""
+        try:
+            db_path = get_db_path()
+            gen_db_path = get_generated_numbers_db_path()
+
+            # メインDB接続
+            self._conn = sqlite3.connect(db_path, timeout=60.0)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+
+            # 生成済み番号DBが同じパスかどうかを確認
+            if db_path == gen_db_path:
+                # 同じDBの場合は同じ接続を共有
+                self._generated_numbers_conn = self._conn
+                self._same_db = True
+                print("バッチDB接続を確立しました（単一DB）")
+            else:
+                # 異なるDBの場合は別接続
+                self._generated_numbers_conn = sqlite3.connect(gen_db_path, timeout=60.0)
+                self._generated_numbers_conn.execute("PRAGMA journal_mode=WAL")
+                self._same_db = False
+                print("バッチDB接続を確立しました（複数DB）")
+
+            return True
+        except Exception as e:
+            print(f"バッチDB接続の確立に失敗: {e}")
+            return False
+
+    def end_batch(self):
+        """バッチ処理終了時にDB接続をクローズ"""
+        try:
+            if self._conn:
+                self._conn.commit()
+                self._conn.close()
+                self._conn = None
+
+            # 別DBの場合のみ生成済み番号DB接続をクローズ
+            if not self._same_db and self._generated_numbers_conn:
+                self._generated_numbers_conn.commit()
+                self._generated_numbers_conn.close()
+
+            self._generated_numbers_conn = None
+            self._same_db = False
+            print("バッチDB接続をクローズしました")
+        except Exception as e:
+            print(f"バッチDB接続のクローズでエラー: {e}")
+
+    def get_main_connection(self):
+        """メインDBの接続を取得"""
+        return self._conn
+
+    def get_generated_numbers_connection(self):
+        """生成済み番号DBの接続を取得"""
+        return self._generated_numbers_conn
+
+    def is_batch_active(self):
+        """バッチ処理が有効かどうか"""
+        return self._conn is not None
+
 
 def init_database():
     """
@@ -208,14 +296,7 @@ def init_database():
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    # 生成番号テーブル
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS generated_numbers (
-        number TEXT PRIMARY KEY
-    )
-    """)
-    
+
     # 梱包依頼書情報テーブル
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS packing_requests (
@@ -238,13 +319,13 @@ def init_database():
         order_amount REAL
     )
     """)
-    
+
     # 既存のテーブルにitem_countカラムが存在しない場合は追加
     cursor.execute("PRAGMA table_info(packing_requests)")
     columns = [column[1] for column in cursor.fetchall()]
     if 'item_count' not in columns:
         cursor.execute("ALTER TABLE packing_requests ADD COLUMN item_count INTEGER")
-    
+
     # 既存のテーブルにorder_amountカラムが存在しない場合は追加
     if 'order_amount' not in columns:
         cursor.execute("ALTER TABLE packing_requests ADD COLUMN order_amount REAL")
@@ -252,8 +333,51 @@ def init_database():
     # 既存のテーブルにweightカラムが存在しない場合は追加
     if 'weight' not in columns:
         cursor.execute("ALTER TABLE packing_requests ADD COLUMN weight REAL")
-    
+
     conn.commit()
+
+    # ===== 生成済み番号DBの初期化と移行 =====
+    gen_db_path = get_generated_numbers_db_path()
+    gen_conn = sqlite3.connect(gen_db_path)
+    gen_cursor = gen_conn.cursor()
+
+    # 新しいDBにテーブル作成
+    gen_cursor.execute("""
+    CREATE TABLE IF NOT EXISTS generated_numbers (
+        number TEXT PRIMARY KEY
+    )
+    """)
+
+    # 旧DBからのデータ移行（メインDBにgenerated_numbersテーブルが存在する場合）
+    try:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='generated_numbers'")
+        if cursor.fetchone():
+            # 旧DBから番号を取得
+            cursor.execute("SELECT number FROM generated_numbers")
+            old_numbers = cursor.fetchall()
+
+            if old_numbers:
+                # 新DBに既存データがあるか確認
+                gen_cursor.execute("SELECT COUNT(*) FROM generated_numbers")
+                new_count = gen_cursor.fetchone()[0]
+
+                if new_count == 0:
+                    # 新DBが空の場合のみ移行
+                    print(f"旧DBから{len(old_numbers)}件の生成済み番号を移行中...")
+                    for (number,) in old_numbers:
+                        try:
+                            gen_cursor.execute("INSERT OR IGNORE INTO generated_numbers (number) VALUES (?)", (number,))
+                        except:
+                            pass
+                    gen_conn.commit()
+                    print(f"移行完了: {len(old_numbers)}件")
+                else:
+                    print(f"新DBに既にデータが存在するため移行をスキップ（既存: {new_count}件）")
+    except Exception as e:
+        print(f"データ移行中にエラー（無視して続行）: {e}")
+
+    gen_conn.commit()
+    gen_conn.close()
     conn.close()
 
 def load_generated_numbers():
@@ -340,43 +464,55 @@ def get_db_connection_with_progress(db_path, max_retries=5, progress_label=None)
             else:
                 raise e
 
-def save_packing_request_with_detailed_feedback(header_info, detail_df):
+def save_packing_request_with_detailed_feedback(header_info, detail_df, use_batch_connection=False):
     """
     詳細な進行状況を表示しながらDB保存
+    use_batch_connection: Trueの場合、BatchDBConnectionを使用
     """
     progress_dialog = None
+    use_external = False
+    conn = None
+
     try:
-        # 進行状況ダイアログを作成
-        progress_dialog, progress_label = create_progress_dialog("処理を開始しています...")
-        
-        # DB接続（リトライ機能付き）
-        db_path = get_db_path()
-        conn = get_db_connection_with_progress(db_path, progress_label=progress_label)
-        
-        # 保存処理の進行状況を更新
-        progress_label.config(text="データを保存中...")
-        progress_label.update()
-        
+        # バッチ接続を使用するかどうか
+        if use_batch_connection:
+            batch_db = BatchDBConnection.get_instance()
+            if batch_db.is_batch_active():
+                conn = batch_db.get_main_connection()
+                use_external = True
+
+        if not use_external:
+            # 進行状況ダイアログを作成（バッチ時は表示しない）
+            progress_dialog, progress_label = create_progress_dialog("処理を開始しています...")
+
+            # DB接続（リトライ機能付き）
+            db_path = get_db_path()
+            conn = get_db_connection_with_progress(db_path, progress_label=progress_label)
+
+            # 保存処理の進行状況を更新
+            progress_label.config(text="データを保存中...")
+            progress_label.update()
+
         cursor = conn.cursor()
-        
+
         # 詳細情報をJSON形式に変換
         details_json = detail_df.to_json(orient='records')
         exclude_inos_json = json.dumps(header_info.get('exclude_inos', []))
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         # アイテム数を計算（梱包可能数が0より大きいレコードのみをカウント）
         item_count = len(detail_df[detail_df['梱包可能数'] > 0])
-        
+
         # ★★★ ここから追加 ★★★
         # 総重量を計算
         total_weight = calculate_total_weight(detail_df)
         # ★★★ ここまで追加 ★★★
-        
+
         # データ挿入（order_amountとweightを追加）
         cursor.execute("""
         INSERT OR REPLACE INTO packing_requests
-        (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no, 
-        order_numbers, customer_name, delivery_location, salesperson, packing_person, 
+        (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no,
+        order_numbers, customer_name, delivery_location, salesperson, packing_person,
         packaging_note, exclude_inos, created_at, details, item_count, order_amount, weight)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
@@ -399,18 +535,21 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df):
             header_info.get('order_amount', 0.0),
             total_weight  # ★追加
         ))
-        
+
         conn.commit()
-        conn.close()
-        
+
+        if not use_external:
+            conn.close()
+
         # 成功時
-        progress_dialog.destroy()
+        if progress_dialog:
+            progress_dialog.destroy()
         return True
-        
+
     except sqlite3.OperationalError as e:
         if progress_dialog:
             progress_dialog.destroy()
-        messagebox.showerror("データベースエラー", 
+        messagebox.showerror("データベースエラー",
             f"データベースへのアクセスに失敗しました。\n"
             f"他のユーザーが同時に処理を行っている可能性があります。\n"
             f"しばらく時間をおいてから再度お試しください。\n\n"
@@ -422,35 +561,53 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df):
         messagebox.showerror("エラー", f"保存中にエラーが発生しました: {str(e)}")
         return False
 
-def load_generated_numbers_with_retry():
+def load_generated_numbers_with_retry(external_conn=None):
     """
     リトライ機能付きの生成済み番号読み込み
+    external_conn: バッチ処理時に外部から渡される接続（省略時は新規接続）
     """
     try:
-        db_path = get_generated_numbers_db_path()
-        conn = get_db_connection_with_progress(db_path, max_retries=3)
+        use_external = external_conn is not None
+        if use_external:
+            conn = external_conn
+        else:
+            db_path = get_generated_numbers_db_path()
+            conn = get_db_connection_with_progress(db_path, max_retries=3)
+
         cursor = conn.cursor()
         cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
         cursor.execute("SELECT number FROM generated_numbers")
         rows = cursor.fetchall()
-        conn.close()
+
+        if not use_external:
+            conn.close()
+
         return set(row[0] for row in rows)
     except Exception as e:
         print(f"生成済み番号の読み込みでエラー: {e}")
         return set()  # エラー時は空のセットを返す
 
-def save_generated_number_with_retry(number):
+def save_generated_number_with_retry(number, external_conn=None):
     """
     リトライ機能付きの生成済み番号保存
+    external_conn: バッチ処理時に外部から渡される接続（省略時は新規接続）
     """
     try:
-        db_path = get_generated_numbers_db_path()
-        conn = get_db_connection_with_progress(db_path, max_retries=3)
+        use_external = external_conn is not None
+        if use_external:
+            conn = external_conn
+        else:
+            db_path = get_generated_numbers_db_path()
+            conn = get_db_connection_with_progress(db_path, max_retries=3)
+
         cursor = conn.cursor()
         cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
         cursor.execute("INSERT INTO generated_numbers (number) VALUES (?)", (number,))
         conn.commit()
-        conn.close()
+
+        if not use_external:
+            conn.close()
+
         return True
     except Exception as e:
         print(f"生成済み番号の保存でエラー: {e}")
@@ -2039,48 +2196,72 @@ def execute_rows(row_indices):
     error_count = 0
     error_details = []
     success_files = []
-    
-    for row_index in row_indices:
-        try:
-            row_data = packing_data_list[row_index]
-            result = process_single_packing_request(row_data)
-            if result:
-                success_count += 1
-                success_files.append(f"行{row_index + 1}: {row_data['番号']}")
-            else:
+
+    # 複数件処理の場合はバッチ接続を使用（OneDrive同期との競合防止）
+    use_batch = len(row_indices) > 1
+    batch_db = None
+
+    if use_batch:
+        batch_db = BatchDBConnection.get_instance()
+        if not batch_db.start_batch():
+            messagebox.showerror("エラー", "データベース接続の確立に失敗しました。")
+            return
+
+    try:
+        for row_index in row_indices:
+            try:
+                row_data = packing_data_list[row_index]
+                result = process_single_packing_request(row_data, use_batch_connection=use_batch)
+                if result:
+                    success_count += 1
+                    success_files.append(f"行{row_index + 1}: {row_data['番号']}")
+                else:
+                    error_count += 1
+                    error_details.append(f"行{row_index + 1}: 処理がキャンセルされました")
+            except Exception as e:
                 error_count += 1
-                error_details.append(f"行{row_index + 1}: 処理がキャンセルされました")
-        except Exception as e:
-            error_count += 1
-            error_details.append(f"行{row_index + 1}: {str(e)}")
-    
+                error_details.append(f"行{row_index + 1}: {str(e)}")
+    finally:
+        # バッチ接続を必ずクローズ
+        if use_batch and batch_db:
+            batch_db.end_batch()
+
     # 結果表示
     result_message = f"処理完了\n成功: {success_count}件\n失敗: {error_count}件"
-    
+
     if success_files:
         result_message += f"\n\n成功した処理:\n" + "\n".join(success_files[:5])
         if len(success_files) > 5:
             result_message += f"\n...他{len(success_files) - 5}件"
-    
+
     if error_details:
         result_message += f"\n\nエラー詳細:\n" + "\n".join(error_details[:3])  # エラーは3件まで表示
         if len(error_details) > 3:
             result_message += f"\n...他{len(error_details) - 3}件"
-    
+
     messagebox.showinfo("実行結果", result_message)
 
-def generate_unique_number():
+def generate_unique_number(use_batch_connection=False):
     """
     JKxxXxxxxx形式（例: JK01X00012）のユニーク番号を生成し、
     既に登録されていなければDBに登録して返します（最大1000回試行）。
+
+    use_batch_connection: Trueの場合、BatchDBConnectionを使用
     """
-    generated_numbers = load_generated_numbers_with_retry()
+    # バッチ接続を使用するかどうか
+    batch_conn = None
+    if use_batch_connection:
+        batch_db = BatchDBConnection.get_instance()
+        if batch_db.is_batch_active():
+            batch_conn = batch_db.get_generated_numbers_connection()
+
+    generated_numbers = load_generated_numbers_with_retry(external_conn=batch_conn)
     print(f"読み込まれた生成済み番号: {len(generated_numbers)}個")
     attempts = 0
     while attempts < 1000:
         number = f"JK{random.randint(0, 99):02d}X{random.randint(0, 99999):05d}"
         if number not in generated_numbers:
-            if save_generated_number_with_retry(number):
+            if save_generated_number_with_retry(number, external_conn=batch_conn):
                 print(f"新しい番号を生成: {number}")
                 return number
             else:
@@ -2303,8 +2484,11 @@ def get_save_path_for_packing_person(packing_person):
     raise FileNotFoundError("該当の保存先フォルダが見つかりません。候補: " + ", ".join(candidates))
 
 
-def process_single_packing_request(row_data):
-    """単一の梱包依頼を処理"""
+def process_single_packing_request(row_data, use_batch_connection=False):
+    """
+    単一の梱包依頼を処理
+    use_batch_connection: Trueの場合、BatchDBConnectionを使用
+    """
     try:
         username = getuser()
 
@@ -2488,7 +2672,7 @@ def process_single_packing_request(row_data):
         ws['A1'] = "事前：梱包依頼書"
         ws['A1'].font = Font(name='メイリオ', size=22, bold=True)
         ws['A1'].alignment = Alignment(horizontal='left')
-        unique_number = generate_unique_number()
+        unique_number = generate_unique_number(use_batch_connection=use_batch_connection)
         ws['A2'] = f"事前梱包依頼番号: {unique_number}"
         ws['A3'] = f"梱包期限日: {packaging_deadline.strftime('%Y/%m/%d')}"
         
@@ -2695,7 +2879,7 @@ def process_single_packing_request(row_data):
             header_info["exclude_inos"] = excluded_ino
         
         # DBに保存（進行状況表示付き）
-        if save_packing_request_with_detailed_feedback(header_info, detail_df):
+        if save_packing_request_with_detailed_feedback(header_info, detail_df, use_batch_connection=use_batch_connection):
             send_adaptive_card_to_teams(header_info)
         else:
             root.after(0, lambda: messagebox.showwarning("警告", "データベースへの保存に失敗しましたが、Excelファイルは正常に作成されました。"))
