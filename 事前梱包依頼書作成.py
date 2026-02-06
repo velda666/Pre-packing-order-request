@@ -19,6 +19,8 @@ import sqlite3  # SQLite用
 import json  # データをJSON形式で保存するため
 import glob  # ファイル検索用
 import subprocess  # ファイルを開くため
+import shutil  # ファイルコピー用
+import tempfile  # 一時ファイル用
 import PIL.Image
 import PIL.ImageTk
 # インポート部分に以下を追加
@@ -35,6 +37,135 @@ import io
 import platform
 
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
+
+# ========== バージョン情報 ==========
+APP_VERSION = "1.0.0"  # Current application version
+APP_NAME = "事前梱包依頼書作成"
+
+
+def get_update_folder_path():
+    """
+    アップデートフォルダのパスを取得します。
+    """
+    username = getuser()
+    candidate_paths = [
+        f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\業務用pythonアプリ最新版\\事前梱包依頼書作成\\update",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\業務用pythonアプリ最新版\\事前梱包依頼書作成\\update",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\業務用pythonアプリ最新版\\事前梱包依頼書作成\\update"
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def check_for_updates():
+    """
+    アップデートがあるかどうかをチェックします。
+    Returns: (has_update, latest_version, update_notes) or (False, None, None) if check fails
+    """
+    try:
+        update_folder = get_update_folder_path()
+        if not update_folder:
+            print("アップデートフォルダが見つかりません。")
+            return False, None, None
+
+        version_file = os.path.join(update_folder, "version.txt")
+        if not os.path.exists(version_file):
+            print("version.txtが見つかりません。")
+            return False, None, None
+
+        with open(version_file, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+
+        # Parse version.txt (format: first line = version, rest = update notes)
+        lines = content.split('\n')
+        latest_version = lines[0].strip()
+        update_notes = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
+
+        # Compare versions
+        def parse_version(v):
+            return tuple(map(int, v.split('.')))
+
+        try:
+            if parse_version(latest_version) > parse_version(APP_VERSION):
+                return True, latest_version, update_notes
+        except:
+            pass
+
+        return False, latest_version, update_notes
+
+    except Exception as e:
+        print(f"バージョンチェックエラー: {e}")
+        return False, None, None
+
+
+def perform_update():
+    """
+    アップデートを実行します。
+    最新版のファイルを現在のファイルに上書きコピーします。
+    """
+    try:
+        update_folder = get_update_folder_path()
+        if not update_folder:
+            return False, "アップデートフォルダが見つかりません。"
+
+        # Find the latest .py file in update folder
+        update_file = os.path.join(update_folder, "事前梱包依頼書作成.py")
+        if not os.path.exists(update_file):
+            return False, "アップデートファイルが見つかりません。"
+
+        # Get current file path
+        current_file = os.path.abspath(__file__)
+
+        # Create backup of current file
+        backup_file = current_file + ".backup"
+        shutil.copy2(current_file, backup_file)
+
+        # Copy new file to current location
+        shutil.copy2(update_file, current_file)
+
+        return True, f"アップデートが完了しました。\nアプリケーションを再起動してください。\n\nバックアップファイル: {backup_file}"
+
+    except Exception as e:
+        return False, f"アップデートに失敗しました: {str(e)}"
+
+
+def show_update_dialog(parent, latest_version, update_notes):
+    """
+    アップデートダイアログを表示します。
+    """
+    result = messagebox.askyesno(
+        "アップデートのお知らせ",
+        f"新しいバージョンが利用可能です。\n\n"
+        f"現在のバージョン: {APP_VERSION}\n"
+        f"最新バージョン: {latest_version}\n\n"
+        f"{update_notes}\n\n"
+        f"今すぐアップデートしますか？"
+    )
+
+    if result:
+        success, message = perform_update()
+        if success:
+            messagebox.showinfo("アップデート完了", message)
+            # Close the application
+            parent.quit()
+            parent.destroy()
+            import sys
+            sys.exit(0)
+        else:
+            messagebox.showerror("アップデートエラー", message)
+
+
+def check_and_prompt_update(parent):
+    """
+    アプリ起動時にアップデートをチェックし、必要に応じてダイアログを表示します。
+    """
+    has_update, latest_version, update_notes = check_for_updates()
+    if has_update:
+        # Use after to show dialog after main window is displayed
+        parent.after(500, lambda: show_update_dialog(parent, latest_version, update_notes))
+
 
 # 各梱包担当者ごとに異なるTeamsチャネルのIncoming Webhook URLを指定してください。
 TEAMS_WEBHOOK_URLS = {
@@ -210,6 +341,379 @@ def get_generated_numbers_db_path():
         if os.path.exists(folder):
             return os.path.join(folder, "generated_numbers.db")
     raise FileNotFoundError("適切なDB保存先フォルダが見つかりません。")
+
+
+def get_order_db_path():
+    """
+    受注データDBのパスを取得します。
+    """
+    username = getuser()
+    candidate_paths = [
+        f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\受注データ\\order_data.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\受注データ\\order_data.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\受注データ\\order_data.db"
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError("受注データDBが見つかりません。")
+
+
+def get_purchase_order_db_path():
+    """
+    発注データDBのパスを取得します。
+    """
+    username = getuser()
+    candidate_paths = [
+        f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\発注データ\\purchase_order_data.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\発注データ\\purchase_order_data.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\発注データ\\purchase_order_data.db"
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError("発注データDBが見つかりません。")
+
+
+def get_arrival_db_path():
+    """
+    入荷データDBのパスを取得します。
+    """
+    username = getuser()
+    candidate_paths = [
+        f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\入荷データ\\arrival_data.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\入荷データ\\arrival_data.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\入荷データ\\arrival_data.db"
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError("入荷データDBが見つかりません。")
+
+
+def get_inventory_db_path():
+    """
+    在庫一覧DBのパスを取得します。
+    """
+    username = getuser()
+    candidate_paths = [
+        f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\社内在庫ロケーション一覧\\TYT01-02在庫一覧.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\社内在庫ロケーション一覧\\TYT01-02在庫一覧.db",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\DB\\社内在庫ロケーション一覧\\TYT01-02在庫一覧.db"
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError("在庫一覧DBが見つかりません。")
+
+
+def load_inventory_data_from_db():
+    """
+    在庫一覧DBから必要なカラムのみを読み込みます。
+    """
+    db_path = get_inventory_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        # Only select required columns for better performance
+        query = 'SELECT "商品コード", "ロット番号", "棚番１" FROM TYT01_02在庫一覧'
+        df = pd.read_sql_query(query, conn, dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
+
+
+def load_order_data_from_db():
+    """
+    受注データDBから必要なカラムのみを読み込みます。
+    """
+    db_path = get_order_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        # Only select required columns for better performance
+        columns = [
+            '受注番号', '客注番号', '得意先名', '得意先', '受渡場所名', '社員名',
+            '明細_倉庫コード', '明細_共通項目2', '明細_商品コード', '明細_商品受注名',
+            '明細_発注引当仕入数量', '明細_受注数量', '受注件名', '取込伝票番号',
+            '明細_出荷売上数量', '明細_自社在庫引当数量', '明細_直接売上数量',
+            '明細_自社出荷数量', '明細_受注金額', '明細_共通項目3'
+        ]
+        columns_str = ', '.join([f'"{col}"' for col in columns])
+        query = f"SELECT {columns_str} FROM order_data"
+        df = pd.read_sql_query(query, conn, dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
+
+
+def load_purchase_order_data_from_db():
+    """
+    発注データDBから必要なカラムのみを読み込みます。
+    """
+    db_path = get_purchase_order_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        # Only select required columns for better performance
+        columns = ['発注番号', '明細_商品コード', '明細_共通項目2', '受注番号']
+        columns_str = ', '.join([f'"{col}"' for col in columns])
+        query = f"SELECT {columns_str} FROM purchase_order_data"
+        df = pd.read_sql_query(query, conn, dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
+
+
+def load_arrival_data_from_db():
+    """
+    入荷データDBから必要なカラムのみを読み込みます。
+    """
+    db_path = get_arrival_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        # Only select required columns for better performance
+        columns = [
+            '発注番号', '明細_商品コード', '明細_共通項目2', '明細_ロット番号',
+            '明細_共通項目3', '明細_商品略名'
+        ]
+        columns_str = ', '.join([f'"{col}"' for col in columns])
+        query = f"SELECT {columns_str} FROM arrival_data"
+        df = pd.read_sql_query(query, conn, dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
+
+
+# ========== データキャッシュ機構 ==========
+# グローバルキャッシュ変数
+_data_cache = {
+    'order_data': None,           # 受注データ
+    'purchase_order_data': None,  # 発注データ
+    'arrival_data': None,         # 入荷データ
+    'inventory_data': None,       # 在庫一覧データ
+    'merged_data': None,          # マージ済みデータ
+    'last_update': None           # 最終更新時刻
+}
+
+
+def clear_data_cache():
+    """
+    データキャッシュをクリアします。
+    新しいデータを読み込む必要がある場合に呼び出してください。
+    """
+    global _data_cache
+    _data_cache = {
+        'order_data': None,
+        'purchase_order_data': None,
+        'arrival_data': None,
+        'inventory_data': None,
+        'merged_data': None,
+        'last_update': None
+    }
+    print("データキャッシュをクリアしました。")
+
+
+def get_cached_order_data():
+    """
+    キャッシュから受注データを取得します。
+    キャッシュがない場合はDBから読み込みます。
+    """
+    global _data_cache
+    if _data_cache['order_data'] is None:
+        print("受注データをDBから読み込み中...")
+        _data_cache['order_data'] = load_order_data_from_db()
+        print(f"受注データ読み込み完了: {len(_data_cache['order_data'])}件")
+    return _data_cache['order_data']
+
+
+def get_cached_purchase_order_data():
+    """
+    キャッシュから発注データを取得します。
+    キャッシュがない場合はDBから読み込みます。
+    """
+    global _data_cache
+    if _data_cache['purchase_order_data'] is None:
+        print("発注データをDBから読み込み中...")
+        _data_cache['purchase_order_data'] = load_purchase_order_data_from_db()
+        print(f"発注データ読み込み完了: {len(_data_cache['purchase_order_data'])}件")
+    return _data_cache['purchase_order_data']
+
+
+def get_cached_arrival_data():
+    """
+    キャッシュから入荷データを取得します。
+    キャッシュがない場合はDBから読み込みます。
+    """
+    global _data_cache
+    if _data_cache['arrival_data'] is None:
+        print("入荷データをDBから読み込み中...")
+        _data_cache['arrival_data'] = load_arrival_data_from_db()
+        print(f"入荷データ読み込み完了: {len(_data_cache['arrival_data'])}件")
+    return _data_cache['arrival_data']
+
+
+def get_cached_inventory_data():
+    """
+    キャッシュから在庫一覧データを取得します。
+    キャッシュがない場合はDBから読み込みます。
+    """
+    global _data_cache
+    if _data_cache['inventory_data'] is None:
+        print("在庫一覧データをDBから読み込み中...")
+        _data_cache['inventory_data'] = load_inventory_data_from_db()
+        print(f"在庫一覧データ読み込み完了: {len(_data_cache['inventory_data'])}件")
+    return _data_cache['inventory_data']
+
+
+def get_merged_data_for_packing():
+    """
+    梱包依頼用のマージ済みデータを取得します。
+    キャッシュがある場合はキャッシュから返します。
+    """
+    global _data_cache
+
+    if _data_cache['merged_data'] is not None:
+        print("マージ済みデータをキャッシュから取得")
+        return _data_cache['merged_data']
+
+    print("マージ済みデータを作成中...")
+
+    # 発注データを取得
+    df_order = get_cached_purchase_order_data()
+    df1 = df_order[['発注番号','明細_商品コード','明細_共通項目2','受注番号']].copy()
+    df1['A'] = df1['発注番号'] + df1['明細_商品コード'] + df1['明細_共通項目2']
+    df1['B'] = df1['明細_共通項目2']
+    df1['C'] = df1['受注番号']
+    df1['D'] = df1['受注番号'] + df1['明細_共通項目2']
+    df1['E'] = df1['発注番号']
+    df1 = df1[['A','B','C','D','E']]
+
+    # 入荷データを取得
+    df_arrival = get_cached_arrival_data()
+    df2 = df_arrival[['発注番号','明細_商品コード','明細_共通項目2','明細_ロット番号']].copy()
+    df2['key'] = df2['発注番号'] + df2['明細_商品コード'] + df2['明細_共通項目2']
+    df3 = pd.merge(df1[['A','C','B']],
+                   df2[['key','明細_ロット番号']],
+                   left_on='A', right_on='key', how='inner')
+    df3.drop('key', axis=1, inplace=True)
+    df3.rename(columns={'C':'受注番号','B':'明細_共通項目2'}, inplace=True)
+
+    # 受注データを取得
+    df_order_list = get_cached_order_data()
+    excluded_codes = ['888888-88888','777777-77777']
+
+    columns_needed = [
+        '受注番号','客注番号','得意先名','得意先','受渡場所名','社員名','明細_倉庫コード',
+        '明細_共通項目2','明細_商品コード','明細_商品受注名',
+        '明細_発注引当仕入数量','明細_受注数量','受注件名','取込伝票番号',
+        '明細_出荷売上数量','明細_自社在庫引当数量','明細_直接売上数量',
+        '明細_自社出荷数量','明細_受注金額'
+    ]
+    df4 = df_order_list[~df_order_list['明細_商品コード'].isin(excluded_codes)][columns_needed].copy()
+    df4 = pd.merge(df4,
+                   df3[['受注番号','明細_共通項目2','明細_ロット番号']],
+                   on=['受注番号','明細_共通項目2'],
+                   how='left')
+    df4['key'] = df4['受注番号'] + df4['明細_共通項目2']
+    df4 = pd.merge(df4, df1[['D','E']], left_on='key', right_on='D', how='left')
+    df4.rename(columns={'E':'発注番号'}, inplace=True)
+    df4.drop(['key','D'], axis=1, inplace=True)
+
+    for col in df4.columns:
+        if col in ['明細_共通項目2','明細_発注引当仕入数量','明細_受注数量','明細_出荷売上数量','明細_自社在庫引当数量','明細_直接売上数量']:
+            df4[col] = pd.to_numeric(df4[col], errors='coerce').fillna(0).astype(int)
+        elif col == '明細_受注金額':
+            df4[col] = pd.to_numeric(df4[col], errors='coerce').fillna(0.0)
+        elif col == '明細_ロット番号':
+            df4[col] = df4[col].fillna('')
+        else:
+            df4[col] = df4[col].replace('nan','').fillna('')
+
+    df4['受注残数'] = df4.apply(
+        lambda row: row['明細_受注数量'] - row['明細_直接売上数量']
+                    if row['明細_倉庫コード'] == '99999'
+                    else row['明細_受注数量'] - row['明細_出荷売上数量'],
+        axis=1
+    )
+    df4.drop_duplicates(subset=['受注番号','明細_共通項目2'], keep='first', inplace=True)
+
+    _data_cache['merged_data'] = df4
+    _data_cache['last_update'] = datetime.now()
+    print(f"マージ済みデータ作成完了: {len(df4)}件")
+
+    return df4
+
+
+def query_order_by_number(order_number):
+    """
+    受注番号で絞り込んだデータを取得します。
+    SQLクエリで直接絞り込むため高速です。
+    """
+    db_path = get_order_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        query = "SELECT * FROM order_data WHERE 受注番号 = ?"
+        df = pd.read_sql_query(query, conn, params=(order_number,), dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
+
+
+def query_order_by_estimate_no(estimate_no):
+    """
+    見積管理番号（取込伝票番号）で絞り込んだデータを取得します。
+    SQLクエリで直接絞り込むため高速です。
+    """
+    db_path = get_order_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        query = "SELECT * FROM order_data WHERE 取込伝票番号 = ?"
+        df = pd.read_sql_query(query, conn, params=(estimate_no,), dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
+
+
+def query_purchase_order_by_order_numbers(order_numbers):
+    """
+    受注番号リストで発注データを絞り込んで取得します。
+    """
+    if not order_numbers:
+        return pd.DataFrame()
+
+    db_path = get_purchase_order_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        placeholders = ','.join(['?' for _ in order_numbers])
+        query = f"SELECT * FROM purchase_order_data WHERE 受注番号 IN ({placeholders})"
+        df = pd.read_sql_query(query, conn, params=order_numbers, dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
+
+
+def query_arrival_by_order_numbers(order_numbers):
+    """
+    発注番号リストで入荷データを絞り込んで取得します。
+    """
+    if not order_numbers:
+        return pd.DataFrame()
+
+    db_path = get_arrival_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        placeholders = ','.join(['?' for _ in order_numbers])
+        query = f"SELECT * FROM arrival_data WHERE 発注番号 IN ({placeholders})"
+        df = pd.read_sql_query(query, conn, params=order_numbers, dtype=str)
+        df = df.fillna('')
+        return df
+    finally:
+        conn.close()
 
 
 class BatchDBConnection:
@@ -2492,95 +2996,12 @@ def process_single_packing_request(row_data, use_batch_connection=False):
     try:
         username = getuser()
 
-        ### (1) CSV読み込み・マージ処理 ###
-        order_paths = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\発注残\\【標準】_発注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\発注残\\【標準】_発注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\発注残\\【標準】_発注.csv",
-        ]
-        order_file = next((path for path in order_paths if os.path.exists(path)), None)
-        if not order_file:
-            raise FileNotFoundError("発注リストファイルが見つかりません。")
-        df_order = pd.read_csv(order_file, encoding='cp932', dtype=str, keep_default_na=False)
-        df1 = df_order[['発注番号','明細_商品コード','明細_共通項目2','受注番号']].copy()
-        df1['A'] = df1['発注番号'] + df1['明細_商品コード'] + df1['明細_共通項目2']
-        df1['B'] = df1['明細_共通項目2']
-        df1['C'] = df1['受注番号']
-        df1['D'] = df1['受注番号'] + df1['明細_共通項目2']
-        df1['E'] = df1['発注番号']
-        df1 = df1[['A','B','C','D','E']]
-
-        arrival_paths = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\入荷実績\\【標準】_入荷.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\入荷実績\\【標準】_入荷.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\入荷実績\\【標準】_入荷.csv"
-        ]
-        arrival_file = next((path for path in arrival_paths if os.path.exists(path)), None)
-        if not arrival_file:
-            raise FileNotFoundError("入荷ファイルが見つかりません。")
-        df_arrival = pd.read_csv(arrival_file, encoding='cp932', dtype=str, keep_default_na=False)
-        df2 = df_arrival[['発注番号','明細_商品コード','明細_共通項目2','明細_ロット番号']].copy()
-        df2['key'] = df2['発注番号'] + df2['明細_商品コード'] + df2['明細_共通項目2']
-        df3 = pd.merge(df1[['A','C','B']],
-                       df2[['key','明細_ロット番号']],
-                       left_on='A', right_on='key', how='inner')
-        df3.drop('key', axis=1, inplace=True)
-        df3.rename(columns={'C':'受注番号','B':'明細_共通項目2'}, inplace=True)
-
-        order_list_paths = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\受注残\\【標準】_受注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\受注残\\【標準】_受注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\受注残\\【標準】_受注.csv"
-        ]
-        order_list_file = next((path for path in order_list_paths if os.path.exists(path)), None)
-        if not order_list_file:
-            raise FileNotFoundError("受注リストファイルが見つかりません。")
-        df_order_list = pd.read_csv(order_list_file, encoding='cp932', dtype=str, keep_default_na=False)
+        ### (1) マージ済みデータをキャッシュから取得 ###
+        df4 = get_merged_data_for_packing().copy()
         excluded_codes = ['888888-88888','777777-77777']
-        
-        # 【変更1】取込伝票番号を列に追加
-        columns_needed = [
-            '受注番号','客注番号','得意先名','得意先','受渡場所名','社員名','明細_倉庫コード',
-            '明細_共通項目2','明細_商品コード','明細_商品受注名',
-            '明細_発注引当仕入数量','明細_受注数量','受注件名','取込伝票番号',
-            '明細_出荷売上数量','明細_自社在庫引当数量','明細_直接売上数量',
-            '明細_自社出荷数量','明細_受注金額'
-        ]
-        df4 = df_order_list[~df_order_list['明細_商品コード'].isin(excluded_codes)][columns_needed].copy()
-        df4 = pd.merge(df4,
-                       df3[['受注番号','明細_共通項目2','明細_ロット番号']],
-                       on=['受注番号','明細_共通項目2'],
-                       how='left')
-        df4['key'] = df4['受注番号'] + df4['明細_共通項目2']
-        df4 = pd.merge(df4, df1[['D','E']], left_on='key', right_on='D', how='left')
-        df4.rename(columns={'E':'発注番号'}, inplace=True)
-        df4.drop(['key','D'], axis=1, inplace=True)
-        for col in df4.columns:
-            if col in ['明細_共通項目2','明細_発注引当仕入数量','明細_受注数量','明細_出荷売上数量','明細_自社在庫引当数量','明細_直接売上数量']:
-                df4[col] = pd.to_numeric(df4[col], errors='coerce').fillna(0).astype(int)
-            elif col == '明細_受注金額':
-                df4[col] = pd.to_numeric(df4[col], errors='coerce').fillna(0.0)
-            elif col == '明細_ロット番号':
-                df4[col] = df4[col].fillna('')
-            else:
-                df4[col] = df4[col].replace('nan','').fillna('')
-        df4['受注残数'] = df4.apply(
-            lambda row: row['明細_受注数量'] - row['明細_直接売上数量']
-                        if row['明細_倉庫コード'] == '99999'
-                        else row['明細_受注数量'] - row['明細_出荷売上数量'],
-            axis=1
-        )
-        df4.drop_duplicates(subset=['受注番号','明細_共通項目2'], keep='first', inplace=True)
-        
-        inventory_paths = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\社内在庫ロケーション一覧\\TYT01-02在庫一覧.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\社内在庫ロケーション一覧\\TYT01-02在庫一覧.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\社内在庫ロケーション一覧\\TYT01-02在庫一覧.csv"
-        ]
-        inventory_file = next((path for path in inventory_paths if os.path.exists(path)), None)
-        if not inventory_file:
-            raise FileNotFoundError("TYT01-02在庫一覧ファイルが見つかりません。")
-        df_inventory = pd.read_csv(inventory_file, encoding='cp932', dtype=str, keep_default_na=False)
+
+        # 在庫一覧データをキャッシュから取得
+        df_inventory = get_cached_inventory_data()
 
         ### (2) 行データから設定を取得 ###
         search_method = "order_number" if row_data['検索方法'] == '受注番号' else "estimate_no"
@@ -2776,10 +3197,13 @@ def process_single_packing_request(row_data, use_batch_connection=False):
                 if qr_data:
                     qr_left_bytes = generate_qr_code(qr_data)
                     if qr_left_bytes:
-                        img_left = Image(BytesIO(qr_left_bytes))
+                        qr_buffer = BytesIO(qr_left_bytes)
+                        qr_buffer.seek(0)  # Read position reset for Excel compatibility
+                        img_left = Image(qr_buffer)
                         img_left.width = 50
                         img_left.height = 50
-                        ws.add_image(img_left, cell_qr_left.coordinate)
+                        img_left.anchor = cell_qr_left.coordinate
+                        ws.add_image(img_left)
                     else:
                         cell_qr_left.value = "QRエラー"
                 else:
@@ -2789,10 +3213,13 @@ def process_single_packing_request(row_data, use_batch_connection=False):
                 if qr_data:
                     qr_right_bytes = generate_qr_code(qr_data)
                     if qr_right_bytes:
-                        img_right = Image(BytesIO(qr_right_bytes))
+                        qr_buffer = BytesIO(qr_right_bytes)
+                        qr_buffer.seek(0)  # Read position reset for Excel compatibility
+                        img_right = Image(qr_buffer)
                         img_right.width = 50
                         img_right.height = 50
-                        ws.add_image(img_right, cell_qr_right.coordinate)
+                        img_right.anchor = cell_qr_right.coordinate
+                        ws.add_image(img_right)
                     else:
                         cell_qr_right.value = "QRエラー"
                 else:
@@ -2835,11 +3262,25 @@ def process_single_packing_request(row_data, use_batch_connection=False):
         
         # ファイル名に見積管理番号を追加（検索方法が見積管理番号の場合）
         if search_method == "estimate_no":
-            form_output_path = os.path.join(save_path, f"事前梱包依頼書_{selected_order_number}_{header_row['取込伝票番号']}_{unique_number_str}_{timestamp}.xlsx")
+            filename = f"事前梱包依頼書_{selected_order_number}_{header_row['取込伝票番号']}_{unique_number_str}_{timestamp}.xlsx"
         else:
-            form_output_path = os.path.join(save_path, f"事前梱包依頼書_{selected_order_number}_{unique_number_str}_{timestamp}.xlsx")
-            
-        wb.save(form_output_path)
+            filename = f"事前梱包依頼書_{selected_order_number}_{unique_number_str}_{timestamp}.xlsx"
+
+        form_output_path = os.path.join(save_path, filename)
+
+        # OneDrive同期競合を避けるため、一時フォルダに保存してからコピー
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, filename)
+        wb.save(temp_path)
+
+        # 一時ファイルをOneDriveフォルダにコピー
+        shutil.copy2(temp_path, form_output_path)
+
+        # 一時ファイルを削除
+        try:
+            os.remove(temp_path)
+        except:
+            pass  # Ignore cleanup errors
         clipboard_text = f"{unique_number_str}にて事前梱包依頼済"
         pyperclip.copy(clipboard_text)
         
@@ -3058,19 +3499,8 @@ def generate_missing_item_qr():
             messagebox.showerror("エラー", "数量は1以上の値を入力してください。")
             return
         
-        username = getuser()
-        # 入荷CSVファイルのパスを取得
-        arrival_paths = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\入荷実績\\【標準】_入荷.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\入荷実績\\【標準】_入荷.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\入荷実績\\【標準】_入荷.csv"
-        ]
-        arrival_file = next((path for path in arrival_paths if os.path.exists(path)), None)
-        if not arrival_file:
-            raise FileNotFoundError("入荷ファイルが見つかりません。")
-        
-        # CSVファイルを読み込み
-        df_arrival = pd.read_csv(arrival_file, encoding='cp932', dtype=str, keep_default_na=False)
+        # 入荷データをキャッシュから取得
+        df_arrival = get_cached_arrival_data()
         
         # 見積管理番号または発注番号で照合
         if estimate_no:
@@ -5265,19 +5695,8 @@ def search_shipment_status():
             if not messagebox.askyesno("確認", f"{len(search_keys)}件の番号で検索を実行しますか？"):
                 return
         
-        username = getuser()
-        
-        # 発注CSVファイルの読み込み
-        order_paths = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\発注残\\【標準】_発注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\発注残\\【標準】_発注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\発注残\\【標準】_発注.csv",
-        ]
-        order_file = next((path for path in order_paths if os.path.exists(path)), None)
-        if not order_file:
-            raise FileNotFoundError("発注リストファイルが見つかりません。")
-        
-        df_order = pd.read_csv(order_file, encoding='cp932', dtype=str, keep_default_na=False)
+        # 発注データをキャッシュから取得
+        df_order = get_cached_purchase_order_data()
         df1 = df_order[['発注番号','明細_商品コード','明細_共通項目2','受注番号']].copy()
         df1['A'] = df1['発注番号'] + df1['明細_商品コード'] + df1['明細_共通項目2']
         df1['B'] = df1['明細_共通項目2']
@@ -5285,18 +5704,9 @@ def search_shipment_status():
         df1['D'] = df1['受注番号'] + df1['明細_共通項目2']
         df1['E'] = df1['発注番号']
         df1 = df1[['A','B','C','D','E']]
-        
-        # 受注CSVファイルの読み込み
-        order_list_paths = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\受注残\\【標準】_受注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\受注残\\【標準】_受注.csv",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\受注残\\【標準】_受注.csv"
-        ]
-        order_list_file = next((path for path in order_list_paths if os.path.exists(path)), None)
-        if not order_list_file:
-            raise FileNotFoundError("受注リストファイルが見つかりません。")
-        
-        df_order_list = pd.read_csv(order_list_file, encoding='cp932', dtype=str, keep_default_na=False)
+
+        # 受注データをキャッシュから取得
+        df_order_list = get_cached_order_data()
         excluded_codes = ['888888-88888','777777-77777']
         columns_needed = [
             '受注番号','客注番号','得意先名','得意先','受渡場所名','社員名','明細_倉庫コード',  # ★「得意先」を追加
@@ -5403,7 +5813,16 @@ def search_shipment_status():
 # ▼ GUI作成（タブ付きインターフェース）
 # -------------------------------------------------
 root = tk.Tk()
-root.title("データ処理アプリケーション")
+root.title(f"データ処理アプリケーション v{APP_VERSION}")
+
+# アプリ起動時にアップデートチェック
+check_and_prompt_update(root)
+
+# バージョン表示用フレーム（右上に配置）
+version_frame = tk.Frame(root)
+version_frame.pack(fill='x', padx=10, pady=5)
+version_label = tk.Label(version_frame, text=f"Ver. {APP_VERSION}", font=("Arial", 9), fg="gray")
+version_label.pack(side='right')
 
 # タブコントロールの作成
 tab_control = ttk.Notebook(root)
