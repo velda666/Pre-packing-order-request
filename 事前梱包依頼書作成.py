@@ -798,7 +798,7 @@ def init_database():
     DBを初期化し、必要なテーブルを作成します。
     """
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     cursor = conn.cursor()
 
     # 梱包依頼書情報テーブル
@@ -842,7 +842,7 @@ def init_database():
 
     # ===== 生成済み番号DBの初期化と移行 =====
     gen_db_path = get_generated_numbers_db_path()
-    gen_conn = sqlite3.connect(gen_db_path)
+    gen_conn = sqlite3.connect(gen_db_path, timeout=30)
     gen_cursor = gen_conn.cursor()
 
     # 新しいDBにテーブル作成
@@ -889,7 +889,7 @@ def load_generated_numbers():
     SQLite DBから既に登録済みの事前梱包依頼番号をsetで返します。
     """
     db_path = get_generated_numbers_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
     cursor.execute("SELECT number FROM generated_numbers")
@@ -902,7 +902,7 @@ def save_generated_number(number):
     SQLite DBに生成済みの事前梱包依頼番号を登録します。
     """
     db_path = get_generated_numbers_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
     cursor.execute("INSERT INTO generated_numbers (number) VALUES (?)", (number,))
@@ -1122,7 +1122,7 @@ def save_packing_request(header_info, detail_df):
     梱包依頼書情報をDBに保存します。
     """
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     cursor = conn.cursor()
     
     # 詳細情報をJSON形式に変換
@@ -1177,7 +1177,7 @@ def load_packing_request(unique_number):
     指定された事前梱包依頼番号の情報をDBから取得します。
     """
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     cursor = conn.cursor()
     
     cursor.execute("""
@@ -1266,9 +1266,9 @@ def get_shipment_numbers_by_order(order_number):
     """
     try:
         db_path = get_packing_list_db_path()
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
         SELECT DISTINCT shipment_number FROM packing_details
         WHERE order_number = ?
@@ -1290,9 +1290,9 @@ def get_packing_details_by_shipment(shipment_number):
     """
     try:
         db_path = get_packing_list_db_path()
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
         SELECT case_number, length, width, height, weight, item_details, packing_style
         FROM packing_details
@@ -3639,7 +3639,7 @@ def get_product_weight(product_code):
     """
     try:
         db_path = get_weight_master_db_path()
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -5818,12 +5818,6 @@ root.title(f"データ処理アプリケーション v{APP_VERSION}")
 # アプリ起動時にアップデートチェック
 check_and_prompt_update(root)
 
-# バージョン表示用フレーム（右上に配置）
-version_frame = tk.Frame(root)
-version_frame.pack(fill='x', padx=10, pady=5)
-version_label = tk.Label(version_frame, text=f"Ver. {APP_VERSION}", font=("Arial", 9), fg="gray")
-version_label.pack(side='right')
-
 # タブコントロールの作成
 tab_control = ttk.Notebook(root)
 
@@ -6068,9 +6062,9 @@ def view_packing_requests():
     try:
         # DBからヘッダ情報のみ取得
         db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30)
         cursor = conn.cursor()
-        
+
         if search_method_view_var.get() == "order_number":
             cursor.execute("""
                 SELECT unique_number, order_number, deadline, estimate_no,
