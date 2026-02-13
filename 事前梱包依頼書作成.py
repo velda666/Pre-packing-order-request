@@ -1,4 +1,4 @@
-import tkinter as tk
+﻿import tkinter as tk
 from tkinter import messagebox, Entry, Button, Text, Listbox, MULTIPLE, Toplevel, Checkbutton, IntVar, StringVar, ttk, Radiobutton, Label
 import pandas as pd
 import openpyxl
@@ -39,7 +39,7 @@ import platform
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.0"  # Current application version
+APP_VERSION = "1.0.1"  # Current application version
 APP_NAME = "事前梱包依頼書作成"
 
 
@@ -494,6 +494,7 @@ _data_cache = {
     'arrival_data': None,         # 入荷データ
     'inventory_data': None,       # 在庫一覧データ
     'merged_data': None,          # マージ済みデータ
+    'estimate_os_case': {},       # 見積管理番号ごとのOS案件判定キャッシュ
     'last_update': None           # 最終更新時刻
 }
 
@@ -510,9 +511,39 @@ def clear_data_cache():
         'arrival_data': None,
         'inventory_data': None,
         'merged_data': None,
+        'estimate_os_case': {},
         'last_update': None
     }
     print("データキャッシュをクリアしました。")
+
+
+def is_os_case_by_estimate_no(estimate_no):
+    """
+    見積管理番号に紐づく受注番号にOS始まりが含まれるかを軽量SQLで判定します。
+    """
+    global _data_cache
+    estimate_no = clean_input(estimate_no)
+    if not estimate_no:
+        return False
+
+    cache_map = _data_cache.get('estimate_os_case', {})
+    if estimate_no in cache_map:
+        return cache_map[estimate_no]
+
+    db_path = get_order_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT 1 FROM order_data WHERE "取込伝票番号" = ? AND UPPER("受注番号") LIKE \'OS%\' LIMIT 1',
+            (estimate_no,)
+        )
+        is_os_case = cursor.fetchone() is not None
+        cache_map[estimate_no] = is_os_case
+        _data_cache['estimate_os_case'] = cache_map
+        return is_os_case
+    finally:
+        conn.close()
 
 
 def get_cached_order_data():
@@ -798,7 +829,7 @@ def init_database():
     DBを初期化し、必要なテーブルを作成します。
     """
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     # 梱包依頼書情報テーブル
@@ -820,7 +851,8 @@ def init_database():
         created_at TEXT,
         details TEXT,
         item_count INTEGER,
-        order_amount REAL
+        order_amount REAL,
+        packing_detail INTEGER DEFAULT 0
     )
     """)
 
@@ -837,12 +869,15 @@ def init_database():
     # 既存のテーブルにweightカラムが存在しない場合は追加
     if 'weight' not in columns:
         cursor.execute("ALTER TABLE packing_requests ADD COLUMN weight REAL")
+    # 既存のテーブルにpacking_detailカラムが存在しない場合は追加
+    if 'packing_detail' not in columns:
+        cursor.execute("ALTER TABLE packing_requests ADD COLUMN packing_detail INTEGER DEFAULT 0")
 
     conn.commit()
 
     # ===== 生成済み番号DBの初期化と移行 =====
     gen_db_path = get_generated_numbers_db_path()
-    gen_conn = sqlite3.connect(gen_db_path, timeout=30)
+    gen_conn = sqlite3.connect(gen_db_path)
     gen_cursor = gen_conn.cursor()
 
     # 新しいDBにテーブル作成
@@ -889,7 +924,7 @@ def load_generated_numbers():
     SQLite DBから既に登録済みの事前梱包依頼番号をsetで返します。
     """
     db_path = get_generated_numbers_db_path()
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
     cursor.execute("SELECT number FROM generated_numbers")
@@ -902,7 +937,7 @@ def save_generated_number(number):
     SQLite DBに生成済みの事前梱包依頼番号を登録します。
     """
     db_path = get_generated_numbers_db_path()
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
     cursor.execute("INSERT INTO generated_numbers (number) VALUES (?)", (number,))
@@ -1017,8 +1052,8 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df, use_batc
         INSERT OR REPLACE INTO packing_requests
         (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no,
         order_numbers, customer_name, delivery_location, salesperson, packing_person,
-        packaging_note, exclude_inos, created_at, details, item_count, order_amount, weight)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        packaging_note, exclude_inos, created_at, details, item_count, order_amount, weight, packing_detail)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             header_info['unique_number'],
             header_info['order_no'],
@@ -1037,7 +1072,8 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df, use_batc
             details_json,
             item_count,
             header_info.get('order_amount', 0.0),
-            total_weight  # ★追加
+            total_weight,  # ★追加
+            int(header_info.get('packing_detail', 0))
         ))
 
         conn.commit()
@@ -1122,7 +1158,7 @@ def save_packing_request(header_info, detail_df):
     梱包依頼書情報をDBに保存します。
     """
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     # 詳細情報をJSON形式に変換
@@ -1147,8 +1183,8 @@ def save_packing_request(header_info, detail_df):
     INSERT OR REPLACE INTO packing_requests
     (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no, 
     order_numbers, customer_name, delivery_location, salesperson, packing_person, 
-    packaging_note, exclude_inos, created_at, details, item_count, weight)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    packaging_note, exclude_inos, created_at, details, item_count, weight, packing_detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header_info['unique_number'],
         header_info['order_no'],
@@ -1166,7 +1202,8 @@ def save_packing_request(header_info, detail_df):
         created_at,
         details_json,
         item_count,
-        total_weight  # ★追加
+        total_weight,  # ★追加
+        int(header_info.get('packing_detail', 0))
     ))
     
     conn.commit()
@@ -1177,7 +1214,7 @@ def load_packing_request(unique_number):
     指定された事前梱包依頼番号の情報をDBから取得します。
     """
     db_path = get_db_path()
-    conn = sqlite3.connect(db_path, timeout=30)
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     cursor.execute("""
@@ -1266,9 +1303,9 @@ def get_shipment_numbers_by_order(order_number):
     """
     try:
         db_path = get_packing_list_db_path()
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-
+        
         cursor.execute("""
         SELECT DISTINCT shipment_number FROM packing_details
         WHERE order_number = ?
@@ -1290,9 +1327,9 @@ def get_packing_details_by_shipment(shipment_number):
     """
     try:
         db_path = get_packing_list_db_path()
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-
+        
         cursor.execute("""
         SELECT case_number, length, width, height, weight, item_details, packing_style
         FROM packing_details
@@ -2555,6 +2592,28 @@ class PackingRowDialog:
                                    values=['11_細田', '12_平松', '13_坂上', '16_土田'], 
                                    state="readonly", width=15, font=("Arial", 10))
         person_combo.pack(side=tk.LEFT, padx=5)
+
+        # 梱包明細依頼（メイン選択項目）
+        packing_detail_frame = tk.Frame(main_frame)
+        packing_detail_frame.pack(fill='x', pady=5)
+        tk.Label(packing_detail_frame, text="梱包明細:", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+        self.packing_detail_var = IntVar(value=1 if edit_data and edit_data.get('梱包明細') == '梱包明細を依頼する案件' else 0)
+        packing_detail_check = Checkbutton(
+            packing_detail_frame,
+            text="梱包明細を依頼する",
+            variable=self.packing_detail_var,
+            font=("Arial", 10)
+        )
+        packing_detail_check.pack(side=tk.LEFT, padx=5)
+        self.packing_detail_check = packing_detail_check
+
+        self.os_warning_label = tk.Label(
+            main_frame,
+            text="※海外案件（受注番号がOS始まり）は自動でONになるためチェック不要です",
+            font=("Arial", 10, "bold"),
+            fg="#d32f2f"
+        )
+        self.os_warning_label.pack(fill='x', pady=(0, 5), padx=5)
         
         # オプション設定
         options_frame = tk.LabelFrame(main_frame, text="オプション設定", padx=10, pady=10,
@@ -2587,18 +2646,36 @@ class PackingRowDialog:
         cancel_button = tk.Button(button_frame, text="キャンセル", command=self.on_cancel,
                                  font=("Arial", 11), padx=20, pady=5)
         cancel_button.pack(side=tk.LEFT, padx=10)
+
+        self.number_var.trace_add("write", self._enforce_os_packing_detail)
+        self.search_method_var.trace_add("write", self._enforce_os_packing_detail)
+        self._enforce_os_packing_detail()
         
         # ダイアログを中央に配置
         self.dialog.update_idletasks()
         x = (self.dialog.winfo_screenwidth() // 2) - (self.dialog.winfo_width() // 2)
         y = (self.dialog.winfo_screenheight() // 2) - (self.dialog.winfo_height() // 2)
         self.dialog.geometry(f"+{x}+{y}")
+
+    def _enforce_os_packing_detail(self, *args):
+        """受注番号がOS始まりの場合は梱包明細依頼を強制ONにする。"""
+        number_text = clean_input(self.number_var.get())
+        is_os_case = self.search_method_var.get() == '受注番号' and str(number_text).upper().startswith("OS")
+        if is_os_case:
+            self.packing_detail_var.set(1)
+            self.packing_detail_check.config(state='disabled')
+        else:
+            self.packing_detail_check.config(state='normal')
     
     def on_ok(self):
         """OKボタンが押された時の処理"""
         if not self.number_var.get().strip():
             messagebox.showerror("エラー", "番号を入力してください。")
             return
+
+        is_os_case = self.search_method_var.get() == '受注番号' and str(clean_input(self.number_var.get())).upper().startswith("OS")
+        if is_os_case:
+            self.packing_detail_var.set(1)
         
         self.result = {
             '検索方法': self.search_method_var.get(),
@@ -2608,7 +2685,8 @@ class PackingRowDialog:
             '梱包担当者': self.person_var.get(),
             '出力除外選択': 'はい' if self.exclude_var.get() else 'いいえ',
             '受注残0出力': 'はい' if self.zero_packing_var.get() else 'いいえ',
-            '梱包可能数変更': 'はい' if self.change_quantity_var.get() else 'いいえ'
+            '梱包可能数変更': 'はい' if self.change_quantity_var.get() else 'いいえ',
+            '梱包明細': '梱包明細を依頼する案件' if self.packing_detail_var.get() else ''
         }
         
         self.dialog.destroy()
@@ -2618,12 +2696,32 @@ class PackingRowDialog:
         self.result = None
         self.dialog.destroy()
 
+def enforce_os_packing_detail_status(row_data):
+    """OS案件は梱包明細を依頼する案件としてGUI行データに即時反映する。"""
+    try:
+        search_method = row_data.get('検索方法', '')
+        input_value = clean_input(row_data.get('番号', ''))
+        is_os_case = False
+
+        if search_method == '受注番号':
+            is_os_case = str(input_value).upper().startswith("OS")
+        elif search_method == '見積管理番号':
+            is_os_case = is_os_case_by_estimate_no(input_value)
+
+        if is_os_case:
+            row_data['梱包明細'] = '梱包明細を依頼する案件'
+    except Exception as e:
+        print(f"OS案件の梱包明細自動反映でエラー: {e}")
+
+    return row_data
+
 def add_packing_row():
     """梱包依頼行を追加"""
     dialog = PackingRowDialog(root)
     root.wait_window(dialog.dialog)
     
     if dialog.result:
+        dialog.result = enforce_os_packing_detail_status(dialog.result)
         # Treeviewに行を追加 - packing_columnsを使用
         values = tuple(dialog.result[col] for col in packing_columns)
         packing_tree.insert('', 'end', values=values)
@@ -2648,6 +2746,7 @@ def edit_packing_row():
     root.wait_window(dialog.dialog)
     
     if dialog.result:
+        dialog.result = enforce_os_packing_detail_status(dialog.result)
         # Treeviewを更新
         values = tuple(dialog.result[col] for col in packing_columns)
         packing_tree.item(item, values=values)
@@ -2717,6 +2816,11 @@ def execute_rows(row_indices):
                 row_data = packing_data_list[row_index]
                 result = process_single_packing_request(row_data, use_batch_connection=use_batch)
                 if result:
+                    tree_items = packing_tree.get_children()
+                    if 0 <= row_index < len(tree_items):
+                        item_id = tree_items[row_index]
+                        values = tuple(row_data.get(col, '') for col in packing_columns)
+                        packing_tree.item(item_id, values=values)
                     success_count += 1
                     success_files.append(f"行{row_index + 1}: {row_data['番号']}")
                 else:
@@ -3011,6 +3115,7 @@ def process_single_packing_request(row_data, use_batch_connection=False):
         show_exclude = row_data['出力除外選択'] == 'はい'
         show_zero = row_data['受注残0出力'] == 'はい'
         change_quantity = row_data['梱包可能数変更'] == 'はい'
+        packing_detail_requested = row_data.get('梱包明細', '') == '梱包明細を依頼する案件'
         packaging_deadline = datetime.strptime(row_data['梱包期限日'], '%Y/%m/%d').date()
         
         if not input_value:
@@ -3037,6 +3142,11 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             else:
                 selected_order_number = order_numbers[0]
                 order_df = order_df[order_df['受注番号'] == selected_order_number]
+
+        is_os_order = str(selected_order_number).upper().startswith("OS")
+        if is_os_order:
+            packing_detail_requested = True
+            row_data['梱包明細'] = '梱包明細を依頼する案件'
         
         # 出力除外アイテムの選択
         excluded_ino = []
@@ -3093,6 +3203,20 @@ def process_single_packing_request(row_data, use_batch_connection=False):
         ws['A1'] = "事前：梱包依頼書"
         ws['A1'].font = Font(name='メイリオ', size=22, bold=True)
         ws['A1'].alignment = Alignment(horizontal='left')
+        packing_detail_text = "必要" if packing_detail_requested else "なし"
+        ws.merge_cells('J1:L2')
+        ws['J1'] = f"【梱包明細：{packing_detail_text}】"
+        ws['J1'].font = Font(name='メイリオ', size=16, bold=True, underline='single')
+        ws['J1'].alignment = Alignment(horizontal='center', vertical='center')
+        black_emphasis_border = Border(
+            left=Side(style='thick', color='000000'),
+            right=Side(style='thick', color='000000'),
+            top=Side(style='thick', color='000000'),
+            bottom=Side(style='thick', color='000000')
+        )
+        for row_idx in range(1, 3):
+            for col_idx in range(10, 13):
+                ws.cell(row=row_idx, column=col_idx).border = black_emphasis_border
         unique_number = generate_unique_number(use_batch_connection=use_batch_connection)
         ws['A2'] = f"事前梱包依頼番号: {unique_number}"
         ws['A3'] = f"梱包期限日: {packaging_deadline.strftime('%Y/%m/%d')}"
@@ -3314,7 +3438,8 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             "salesperson": header_row['社員名'],
             "packing_person": packing_person,
             "packaging_note": packaging_note,
-            "order_amount": total_order_amount
+            "order_amount": total_order_amount,
+            "packing_detail": 1 if packing_detail_requested else 0
         }
         if excluded_ino:
             header_info["exclude_inos"] = excluded_ino
@@ -3639,7 +3764,7 @@ def get_product_weight(product_code):
     """
     try:
         db_path = get_weight_master_db_path()
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -5847,7 +5972,7 @@ table_frame = tk.Frame(frame)
 table_frame.pack(fill='both', expand=True, pady=10)
 
 # Treeviewを使用した表形式のGUI - 列名を独自の変数にする
-packing_columns = ('検索方法', '番号', '梱包期限日', '梱包依頼摘要', '梱包担当者', '出力除外選択', '受注残0出力', '梱包可能数変更')
+packing_columns = ('検索方法', '番号', '梱包期限日', '梱包依頼摘要', '梱包担当者', '出力除外選択', '受注残0出力', '梱包可能数変更', '梱包明細')
 packing_tree = ttk.Treeview(table_frame, columns=packing_columns, show='headings', height=12)
 
 # 列の設定
@@ -5859,6 +5984,7 @@ packing_tree.heading('梱包担当者', text='梱包担当者')
 packing_tree.heading('出力除外選択', text='出力除外選択')
 packing_tree.heading('受注残0出力', text='受注残0出力')
 packing_tree.heading('梱包可能数変更', text='梱包可能数変更')
+packing_tree.heading('梱包明細', text='梱包明細')
 
 # 列幅の設定
 packing_tree.column('検索方法', width=100, anchor='center')
@@ -5869,6 +5995,7 @@ packing_tree.column('梱包担当者', width=100, anchor='center')
 packing_tree.column('出力除外選択', width=100, anchor='center')
 packing_tree.column('受注残0出力', width=100, anchor='center')
 packing_tree.column('梱包可能数変更', width=120, anchor='center')
+packing_tree.column('梱包明細', width=200, anchor='center')
 
 # スクロールバー
 tree_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=packing_tree.yview)
@@ -6062,15 +6189,15 @@ def view_packing_requests():
     try:
         # DBからヘッダ情報のみ取得
         db_path = get_db_path()
-        conn = sqlite3.connect(db_path, timeout=30)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-
+        
         if search_method_view_var.get() == "order_number":
             cursor.execute("""
                 SELECT unique_number, order_number, deadline, estimate_no,
                        ship_name, customer_order_no, order_numbers,
                        customer_name, delivery_location, salesperson,
-                       packing_person, packaging_note, item_count, order_amount
+                       packing_person, packaging_note, item_count, order_amount, packing_detail
                 FROM packing_requests
                 WHERE order_number = ?
             """, (key,))
@@ -6079,7 +6206,7 @@ def view_packing_requests():
                 SELECT unique_number, order_number, deadline, estimate_no,
                        ship_name, customer_order_no, order_numbers,
                        customer_name, delivery_location, salesperson,
-                       packing_person, packaging_note, item_count, order_amount
+                       packing_person, packaging_note, item_count, order_amount, packing_detail
                 FROM packing_requests
                 WHERE estimate_no = ?
             """, (key,))
@@ -6116,6 +6243,9 @@ def view_packing_requests():
                     tree.insert('', 'end', values=(field, f"¥{order_amount:,.0f}"))  # ★追加：金額表示
                 else:
                     tree.insert('', 'end', values=(field, row[idx]))
+            packing_detail_value = row[-1] if row[-1] is not None else 0
+            detail_text = "梱包明細を依頼する案件" if int(packing_detail_value) == 1 else "通常"
+            tree.insert('', 'end', values=("梱包明細", detail_text))
             tree.insert('', 'end', values=('', ''))  # レコード間の空行
             
     except Exception as e:
