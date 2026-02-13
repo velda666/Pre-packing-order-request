@@ -39,7 +39,7 @@ import platform
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.1"  # Current application version
+APP_VERSION = "1.0.2"  # Current application version
 APP_NAME = "事前梱包依頼書作成"
 
 
