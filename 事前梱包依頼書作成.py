@@ -39,7 +39,7 @@ import platform
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.4"  # Current application version
+APP_VERSION = "1.0.5"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -2734,7 +2734,7 @@ class PackingRowDialog:
         exclude_check.pack(anchor='w', pady=3)
         
         self.zero_packing_var = IntVar(value=1 if not edit_data or edit_data.get('受注残0出力') == 'はい' else 0)
-        zero_check = Checkbutton(options_frame, text="受注残が0、かつ梱包明細が0の製品も出力する", 
+        zero_check = Checkbutton(options_frame, text="受注残が0、かつ梱包可能数が0のアイテムも出力する", 
                                 variable=self.zero_packing_var, font=("Arial", 10))
         zero_check.pack(anchor='w', pady=3)
         
