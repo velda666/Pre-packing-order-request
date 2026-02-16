@@ -39,7 +39,7 @@ import platform
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.5"  # Current application version
+APP_VERSION = "1.0.6"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -118,12 +118,22 @@ def perform_update():
         # Get current file path
         current_file = os.path.abspath(__file__)
 
-        # Create backup of current file
-        backup_file = current_file + ".backup"
+        # Create backup in a user-writable location (Program Files is often read-only)
+        backup_dir = os.path.join(tempfile.gettempdir(), "事前梱包依頼書作成_backup")
+        os.makedirs(backup_dir, exist_ok=True)
+        backup_name = f"事前梱包依頼書作成_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py.backup"
+        backup_file = os.path.join(backup_dir, backup_name)
         shutil.copy2(current_file, backup_file)
 
         # Copy new file to current location
-        shutil.copy2(update_file, current_file)
+        try:
+            shutil.copy2(update_file, current_file)
+        except PermissionError:
+            return False, (
+                "アップデートに失敗しました: 現在の配置先に書き込み権限がありません。\n"
+                f"配置先: {current_file}\n\n"
+                "管理者として実行するか、書き込み可能なフォルダへアプリを配置して再実行してください。"
+            )
 
         return True, f"アップデートが完了しました。\nアプリケーションを再起動してください。\n\nバックアップファイル: {backup_file}"
 
