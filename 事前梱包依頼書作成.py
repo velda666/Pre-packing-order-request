@@ -39,8 +39,8 @@ import platform
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.2"  # Current application version
-APP_NAME = "事前梱包依頼書作成"
+APP_VERSION = "1.0.3"  # Current application version
+APP_NAME = "事前梱包依頼書管理アプリ"
 
 
 def get_update_folder_path():
@@ -852,7 +852,12 @@ def init_database():
         details TEXT,
         item_count INTEGER,
         order_amount REAL,
-        packing_detail INTEGER DEFAULT 0
+        packing_detail INTEGER DEFAULT 0,
+        output_file_path TEXT,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_at TEXT,
+        deleted_by TEXT,
+        delete_reason TEXT
     )
     """)
 
@@ -872,6 +877,21 @@ def init_database():
     # 既存のテーブルにpacking_detailカラムが存在しない場合は追加
     if 'packing_detail' not in columns:
         cursor.execute("ALTER TABLE packing_requests ADD COLUMN packing_detail INTEGER DEFAULT 0")
+    # 既存のテーブルにoutput_file_pathカラムが存在しない場合は追加
+    if 'output_file_path' not in columns:
+        cursor.execute("ALTER TABLE packing_requests ADD COLUMN output_file_path TEXT")
+    # 既存のテーブルにis_deletedカラムが存在しない場合は追加
+    if 'is_deleted' not in columns:
+        cursor.execute("ALTER TABLE packing_requests ADD COLUMN is_deleted INTEGER DEFAULT 0")
+    # 既存のテーブルにdeleted_atカラムが存在しない場合は追加
+    if 'deleted_at' not in columns:
+        cursor.execute("ALTER TABLE packing_requests ADD COLUMN deleted_at TEXT")
+    # 既存のテーブルにdeleted_byカラムが存在しない場合は追加
+    if 'deleted_by' not in columns:
+        cursor.execute("ALTER TABLE packing_requests ADD COLUMN deleted_by TEXT")
+    # 既存のテーブルにdelete_reasonカラムが存在しない場合は追加
+    if 'delete_reason' not in columns:
+        cursor.execute("ALTER TABLE packing_requests ADD COLUMN delete_reason TEXT")
 
     conn.commit()
 
@@ -1051,9 +1071,10 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df, use_batc
         cursor.execute("""
         INSERT OR REPLACE INTO packing_requests
         (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no,
-        order_numbers, customer_name, delivery_location, salesperson, packing_person,
-        packaging_note, exclude_inos, created_at, details, item_count, order_amount, weight, packing_detail)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         order_numbers, customer_name, delivery_location, salesperson, packing_person,
+         packaging_note, exclude_inos, created_at, details, item_count, order_amount, weight, packing_detail,
+         output_file_path, is_deleted, deleted_at, deleted_by, delete_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             header_info['unique_number'],
             header_info['order_no'],
@@ -1073,7 +1094,12 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df, use_batc
             item_count,
             header_info.get('order_amount', 0.0),
             total_weight,  # ★追加
-            int(header_info.get('packing_detail', 0))
+            int(header_info.get('packing_detail', 0)),
+            header_info.get('output_file_path', ''),
+            0,
+            None,
+            None,
+            None
         ))
 
         conn.commit()
@@ -1182,9 +1208,10 @@ def save_packing_request(header_info, detail_df):
     cursor.execute("""
     INSERT OR REPLACE INTO packing_requests
     (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no, 
-    order_numbers, customer_name, delivery_location, salesperson, packing_person, 
-    packaging_note, exclude_inos, created_at, details, item_count, weight, packing_detail)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     order_numbers, customer_name, delivery_location, salesperson, packing_person, 
+     packaging_note, exclude_inos, created_at, details, item_count, weight, packing_detail,
+     output_file_path, is_deleted, deleted_at, deleted_by, delete_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header_info['unique_number'],
         header_info['order_no'],
@@ -1203,35 +1230,40 @@ def save_packing_request(header_info, detail_df):
         details_json,
         item_count,
         total_weight,  # ★追加
-        int(header_info.get('packing_detail', 0))
+        int(header_info.get('packing_detail', 0)),
+        header_info.get('output_file_path', ''),
+        0,
+        None,
+        None,
+        None
     ))
     
     conn.commit()
     conn.close()
 
-def load_packing_request(unique_number):
+def load_packing_request(unique_number, include_deleted=False):
     """
     指定された事前梱包依頼番号の情報をDBから取得します。
     """
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    cursor.execute("""
-    SELECT * FROM packing_requests
-    WHERE unique_number = ?
-    """, (unique_number,))
+    query = "SELECT * FROM packing_requests WHERE unique_number = ?"
+    params = [unique_number]
+    if not include_deleted:
+        query += " AND IFNULL(is_deleted, 0) = 0"
+    cursor.execute(query, params)
     
     row = cursor.fetchone()
-    conn.close()
     
     if not row:
+        conn.close()
         return None
     
     # カラム名を取得
-    cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(packing_requests)")
     columns = [col[1] for col in cursor.fetchall()]
+    conn.close()
     
     # 結果を辞書に変換
     result = dict(zip(columns, row))
@@ -1243,6 +1275,74 @@ def load_packing_request(unique_number):
     result['exclude_inos'] = json.loads(result['exclude_inos'])
     
     return result
+
+def soft_delete_packing_request(unique_number, delete_reason=""):
+    """
+    指定の梱包依頼を論理削除し、対応Excelファイルを削除済みフォルダへ退避します。
+    """
+    db_path = get_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+        SELECT unique_number, output_file_path, packing_person, IFNULL(is_deleted, 0)
+        FROM packing_requests
+        WHERE unique_number = ?
+        """, (unique_number,))
+        row = cursor.fetchone()
+
+        if not row:
+            return False, f"事前梱包依頼番号 [{unique_number}] は見つかりません。"
+
+        _, output_file_path, packing_person, is_deleted = row
+        if int(is_deleted) == 1:
+            return False, f"事前梱包依頼番号 [{unique_number}] は既に削除済みです。"
+
+        moved_path = ""
+        file_status_note = "関連ファイルなし"
+
+        # 出力ファイルが存在する場合は「削除済み」フォルダへ退避
+        if output_file_path and os.path.exists(output_file_path):
+            output_dir = os.path.dirname(output_file_path)
+            archive_dir = os.path.join(output_dir, "削除済み")
+            os.makedirs(archive_dir, exist_ok=True)
+
+            src_name = os.path.basename(output_file_path)
+            dst_path = os.path.join(archive_dir, src_name)
+            if os.path.exists(dst_path):
+                base, ext = os.path.splitext(src_name)
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                dst_path = os.path.join(archive_dir, f"{base}_deleted_{stamp}{ext}")
+
+            shutil.move(output_file_path, dst_path)
+            moved_path = dst_path
+            file_status_note = f"ファイル退避先: {dst_path}"
+        elif output_file_path:
+            file_status_note = f"元ファイル未検出: {output_file_path}"
+
+        deleted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        deleted_by = getuser()
+        reason = (delete_reason or "").strip()
+
+        cursor.execute("""
+        UPDATE packing_requests
+        SET is_deleted = 1,
+            deleted_at = ?,
+            deleted_by = ?,
+            delete_reason = ?,
+            output_file_path = ?
+        WHERE unique_number = ?
+        """, (deleted_at, deleted_by, reason, moved_path or output_file_path, unique_number))
+
+        conn.commit()
+        return True, f"事前梱包依頼番号 [{unique_number}] を削除しました。\n{file_status_note}"
+    except Exception as e:
+        conn.rollback()
+        return False, f"削除処理中にエラーが発生しました: {str(e)}"
+    finally:
+        conn.close()
 
 # 新機能：過去の梱包依頼から梱包可能数を検索する関数
 def get_previous_packing_quantities(order_number, i_no):
@@ -1257,6 +1357,7 @@ def get_previous_packing_quantities(order_number, i_no):
         cursor.execute("""
         SELECT details FROM packing_requests
         WHERE order_number = ?
+          AND IFNULL(is_deleted, 0) = 0
         """, (order_number,))
         
         rows = cursor.fetchall()
@@ -2621,12 +2722,12 @@ class PackingRowDialog:
         options_frame.pack(fill='x', pady=10)
         
         self.exclude_var = IntVar(value=1 if edit_data and edit_data.get('出力除外選択') == 'はい' else 0)
-        exclude_check = Checkbutton(options_frame, text="出力しないアイテムを選択する", 
+        exclude_check = Checkbutton(options_frame, text="出力するアイテムを選択する", 
                                    variable=self.exclude_var, font=("Arial", 10))
         exclude_check.pack(anchor='w', pady=3)
         
-        self.zero_packing_var = IntVar(value=1 if edit_data and edit_data.get('受注残0出力') == 'はい' else 0)
-        zero_check = Checkbutton(options_frame, text="受注残が0、かつ梱包可能数が0の製品も出力する", 
+        self.zero_packing_var = IntVar(value=1 if not edit_data or edit_data.get('受注残0出力') == 'はい' else 0)
+        zero_check = Checkbutton(options_frame, text="受注残が0、かつ梱包明細が0の製品も出力する", 
                                 variable=self.zero_packing_var, font=("Arial", 10))
         zero_check.pack(anchor='w', pady=3)
         
@@ -2754,6 +2855,15 @@ def edit_packing_row():
         # データリストも更新
         row_index = packing_tree.index(item)
         packing_data_list[row_index] = dialog.result
+
+def on_packing_tree_double_click(event):
+    """梱包依頼一覧の行をダブルクリックした際に編集ダイアログを開く"""
+    clicked_item = packing_tree.identify_row(event.y)
+    if not clicked_item:
+        return
+    packing_tree.selection_set(clicked_item)
+    packing_tree.focus(clicked_item)
+    edit_packing_row()
 
 
 def delete_packing_row():
@@ -2969,20 +3079,21 @@ def select_order_number_dialog(parent, order_numbers, df):
     
     return selected_order[0]
 
-class ExcludeItemsDialog:
+class SelectOutputItemsDialog:
     """
-    出力しないI/no.をユーザーがListboxで選択できるダイアログです。
+    出力するI/no.をユーザーがチェックボックスで選択できるダイアログです。
     """
     def __init__(self, parent, items, target_number, search_method):
         self.top = tk.Toplevel(parent)
         
         # タイトルに対象番号を追加
         search_type = "受注番号" if search_method == "order_number" else "見積管理番号"
-        self.top.title(f"出力しないI/no.を選択 - {search_type}: {target_number}")
+        self.top.title(f"出力するI/no.を選択 - {search_type}: {target_number}")
         self.top.geometry("600x500")
         
         self.items = items
-        self.excluded_items = []
+        self.selected_items = []
+        self.item_vars = []
         
         # メインフレーム
         main_frame = tk.Frame(self.top, padx=10, pady=10)
@@ -2990,18 +3101,47 @@ class ExcludeItemsDialog:
         
         # 説明ラベル（対象番号を表示）
         info_label = tk.Label(main_frame, 
-                             text=f"【{search_type}: {target_number}】\n出力しないアイテムを選択してください",
+                             text=f"【{search_type}: {target_number}】\n出力するアイテムを選択してください",
                              font=("Arial", 12, "bold"), fg="blue")
         info_label.pack(pady=(0, 10))
         
-        # リストボックス
-        self.listbox = Listbox(self.top, selectmode=MULTIPLE, width=70, height=20)
+        control_frame = tk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=(0, 8))
+
+        select_all_button = Button(control_frame, text="全選択", command=self.select_all)
+        select_all_button.pack(side=tk.LEFT, padx=(0, 5))
+
+        clear_all_button = Button(control_frame, text="全解除", command=self.clear_all)
+        clear_all_button.pack(side=tk.LEFT)
+
+        # チェックボックス一覧（スクロール対応）
+        list_container = tk.Frame(main_frame)
+        list_container.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(list_container)
+        scrollbar = tk.Scrollbar(list_container, orient="vertical", command=canvas.yview)
+        self.checkbox_frame = tk.Frame(canvas)
+
+        self.checkbox_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=self.checkbox_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
         for item in items:
-            self.listbox.insert(tk.END, f"{item['I/no']} - {item['商品コード']} - {item['商品名']}")
-        self.listbox.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+            var = IntVar(value=1)
+            self.item_vars.append(var)
+            text = f"{item['I/no']} - {item['商品コード']} - {item['商品名']}"
+            chk = Checkbutton(self.checkbox_frame, text=text, variable=var, anchor='w', justify='left')
+            chk.pack(fill=tk.X, anchor='w')
         
         # ボタンフレーム
-        button_frame = tk.Frame(self.top)
+        button_frame = tk.Frame(main_frame)
         button_frame.pack(pady=10)
         
         select_button = Button(button_frame, text="選択", command=self.on_select)
@@ -3018,19 +3158,29 @@ class ExcludeItemsDialog:
         y = (self.top.winfo_screenheight() // 2) - (self.top.winfo_height() // 2)
         self.top.geometry(f"+{x}+{y}")
 
+    def select_all(self):
+        for var in self.item_vars:
+            var.set(1)
+
+    def clear_all(self):
+        for var in self.item_vars:
+            var.set(0)
+
     def on_select(self):
-        selected_indices = self.listbox.curselection()
-        self.excluded_items = [self.items[i] for i in selected_indices]
+        self.selected_items = [self.items[i] for i, var in enumerate(self.item_vars) if var.get()]
+        if not self.selected_items:
+            messagebox.showwarning("警告", "出力するアイテムを1件以上選択してください。")
+            return
         self.top.destroy()
     
     def on_cancel(self):
-        self.excluded_items = []
+        self.selected_items = []
         self.top.destroy()
 
-def select_items_to_exclude(df, order_number, target_number, search_method):
+def select_items_to_output(df, order_number, target_number, search_method):
     """
-    受注番号に紐づくI/no.リストを表示し、ユーザーが除外したいアイテムを選択可能にします。
-    選択されたアイテムはdfから除外されます。
+    受注番号に紐づくI/no.リストを表示し、ユーザーが出力したいアイテムを選択可能にします。
+    選択されたアイテムのみdfに残します。
     """
     # I/no.の昇順でソートしてからリストに変換
     items_df = df[df['受注番号'] == order_number][['明細_共通項目2', '明細_商品コード', '明細_商品受注名']]\
@@ -3039,18 +3189,21 @@ def select_items_to_exclude(df, order_number, target_number, search_method):
     
     items = items_df.to_dict('records')
     
-    dialog = ExcludeItemsDialog(root, items, target_number, search_method)
+    dialog = SelectOutputItemsDialog(root, items, target_number, search_method)
     root.wait_window(dialog.top)
-    excluded_items = dialog.excluded_items
+    selected_items = dialog.selected_items
+    selected_ino = []
     excluded_ino = []
-    if excluded_items:
+    if selected_items:
         search_type = "受注番号" if search_method == "order_number" else "見積管理番号"
-        confirm_message = f"【{search_type}: {target_number}】\n以下の商品は出力しませんが、よろしいですか？\n\n"
-        for item in excluded_items:
+        confirm_message = f"【{search_type}: {target_number}】\n以下の商品を出力します。よろしいですか？\n\n"
+        for item in selected_items:
             confirm_message += f"[{item['I/no']}][{item['商品コード']}][{item['商品名']}]\n"
         if messagebox.askyesno("確認", confirm_message):
-            excluded_ino = [item['I/no'] for item in excluded_items]
-            df = df[~((df['受注番号'] == order_number) & (df['明細_共通項目2'].isin(excluded_ino)))]
+            selected_ino = [item['I/no'] for item in selected_items]
+            all_ino = [item['I/no'] for item in items]
+            excluded_ino = [i_no for i_no in all_ino if i_no not in selected_ino]
+            df = df[~(df['受注番号'] == order_number) | (df['明細_共通項目2'].isin(selected_ino))]
     return df, excluded_ino
 
 def get_save_path_for_packing_person(packing_person):
@@ -3148,10 +3301,10 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             packing_detail_requested = True
             row_data['梱包明細'] = '梱包明細を依頼する案件'
         
-        # 出力除外アイテムの選択
+        # 出力対象アイテムの選択
         excluded_ino = []
         if show_exclude:
-            df4_filtered, excluded_ino = select_items_to_exclude(df4, selected_order_number, input_value, search_method)
+            df4_filtered, excluded_ino = select_items_to_output(df4, selected_order_number, input_value, search_method)
             if search_method == "order_number":
                 order_df = df4_filtered[df4_filtered['受注番号'] == selected_order_number]
             else:
@@ -3439,7 +3592,8 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             "packing_person": packing_person,
             "packaging_note": packaging_note,
             "order_amount": total_order_amount,
-            "packing_detail": 1 if packing_detail_requested else 0
+            "packing_detail": 1 if packing_detail_requested else 0,
+            "output_file_path": form_output_path
         }
         if excluded_ino:
             header_info["exclude_inos"] = excluded_ino
@@ -3576,23 +3730,25 @@ def select_file_dialog(file_list):
 # 欠品QR表示機能
 def generate_missing_item_qr():
     """
-    見積管理番号/発注番号と行番号、数量からQRコードを表示します。
+    見積管理番号/発注番号/受注番号と行番号、数量からQRコードを表示します。
     商品コードと商品略名も合わせて表示します。
     """
     try:
         # 入力値を取得
         estimate_no = missing_estimate_no_entry.get().strip()
         order_no = missing_order_no_entry.get().strip()
+        order_number = missing_order_number_entry.get().strip()
         line_no = missing_line_no_entry.get().strip()
         quantity_str = missing_quantity_entry.get().strip()
         
-        # 入力チェック1: 見積管理番号と発注番号の排他チェック
-        if not estimate_no and not order_no:
-            messagebox.showerror("エラー", "見積管理番号または発注番号のどちらか一方を入力してください。")
+        # 入力チェック1: 検索キーの排他チェック
+        filled_key_count = sum(1 for v in [estimate_no, order_no, order_number] if v)
+        if filled_key_count == 0:
+            messagebox.showerror("エラー", "見積管理番号・発注番号・受注番号のいずれか1つを入力してください。")
             return
         
-        if estimate_no and order_no:
-            messagebox.showerror("エラー", "見積管理番号と発注番号は両方入力できません。\nどちらか一方を入力してください。")
+        if filled_key_count > 1:
+            messagebox.showerror("エラー", "見積管理番号・発注番号・受注番号は同時入力できません。\nどれか1つだけ入力してください。")
             return
         
         # 入力チェック2: 行番号
@@ -3627,19 +3783,41 @@ def generate_missing_item_qr():
         # 入荷データをキャッシュから取得
         df_arrival = get_cached_arrival_data()
         
-        # 見積管理番号または発注番号で照合
+        # 見積管理番号・発注番号・受注番号で照合
         if estimate_no:
             # 見積管理番号で検索
             matching_records = df_arrival[(df_arrival['明細_共通項目3'] == estimate_no) & 
                                         (df_arrival['明細_共通項目2'] == line_no)]
             search_type = "見積管理番号"
             search_key = estimate_no
-        else:
+        elif order_no:
             # 発注番号で検索
             matching_records = df_arrival[(df_arrival['発注番号'] == order_no) & 
                                         (df_arrival['明細_共通項目2'] == line_no)]
             search_type = "発注番号"
             search_key = order_no
+        else:
+            # 受注番号で検索（purchase_order_dataから発注番号を解決）
+            df_purchase = get_cached_purchase_order_data()
+            purchase_records = df_purchase[(df_purchase['受注番号'] == order_number) &
+                                           (df_purchase['明細_共通項目2'] == line_no)]
+            if purchase_records.empty:
+                messagebox.showerror(
+                    "エラー",
+                    f"受注番号 [{order_number}] と行番号 [{line_no}] に一致する発注データが見つかりません。"
+                )
+                return
+
+            linked_order_nos = purchase_records['発注番号'].dropna().astype(str).unique().tolist()
+            linked_product_codes = purchase_records['明細_商品コード'].dropna().astype(str).unique().tolist()
+
+            matching_records = df_arrival[(df_arrival['発注番号'].isin(linked_order_nos)) &
+                                          (df_arrival['明細_共通項目2'] == line_no)]
+            if linked_product_codes:
+                matching_records = matching_records[matching_records['明細_商品コード'].isin(linked_product_codes)]
+
+            search_type = "受注番号"
+            search_key = order_number
         
         if matching_records.empty:
             messagebox.showerror("エラー", 
@@ -5938,7 +6116,7 @@ def search_shipment_status():
 # ▼ GUI作成（タブ付きインターフェース）
 # -------------------------------------------------
 root = tk.Tk()
-root.title(f"データ処理アプリケーション v{APP_VERSION}")
+root.title(f"{APP_NAME} v{APP_VERSION}")
 
 # アプリ起動時にアップデートチェック
 check_and_prompt_update(root)
@@ -5952,11 +6130,9 @@ tab_control.add(tab1, text='新規梱包依頼')
 
 # タブ2（ファイルを開く機能）
 tab2 = ttk.Frame(tab_control)
-tab_control.add(tab2, text='ファイルを開く')
 
 # タブ3（欠品QR機能）
 tab3 = ttk.Frame(tab_control)
-tab_control.add(tab3, text='欠品QR')
 
 tab_control.pack(expand=1, fill="both")
 
@@ -5981,7 +6157,7 @@ packing_tree.heading('番号', text='番号')
 packing_tree.heading('梱包期限日', text='梱包期限日')
 packing_tree.heading('梱包依頼摘要', text='梱包依頼摘要')
 packing_tree.heading('梱包担当者', text='梱包担当者')
-packing_tree.heading('出力除外選択', text='出力除外選択')
+packing_tree.heading('出力除外選択', text='出力アイテム選択')
 packing_tree.heading('受注残0出力', text='受注残0出力')
 packing_tree.heading('梱包可能数変更', text='梱包可能数変更')
 packing_tree.heading('梱包明細', text='梱包明細')
@@ -6000,6 +6176,7 @@ packing_tree.column('梱包明細', width=200, anchor='center')
 # スクロールバー
 tree_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=packing_tree.yview)
 packing_tree.configure(yscrollcommand=tree_scrollbar.set)
+packing_tree.bind("<Double-1>", on_packing_tree_double_click)
 
 packing_tree.pack(side=tk.LEFT, fill='both', expand=True)
 tree_scrollbar.pack(side=tk.RIGHT, fill='y')
@@ -6058,7 +6235,7 @@ frame3 = tk.Frame(tab3, padx=20, pady=20)
 frame3.pack(fill='both', expand=True)
 
 # タイトル
-label3 = tk.Label(frame3, text="見積管理番号/発注番号と行番号からQRコードを表示", font=("Arial", 12, "bold"))
+label3 = tk.Label(frame3, text="見積管理番号/発注番号/受注番号と行番号からQRコードを表示", font=("Arial", 12, "bold"))
 label3.pack(pady=10)
 
 # メインコンテンツエリア（左右分割）
@@ -6081,8 +6258,14 @@ missing_order_no_label.pack(pady=5, anchor='w')
 missing_order_no_entry = Entry(left_frame, width=30)
 missing_order_no_entry.pack(pady=5, anchor='w')
 
+# 受注番号入力
+missing_order_number_label = tk.Label(left_frame, text="受注番号:")
+missing_order_number_label.pack(pady=5, anchor='w')
+missing_order_number_entry = Entry(left_frame, width=30)
+missing_order_number_entry.pack(pady=5, anchor='w')
+
 # 注意書き
-note_label = tk.Label(left_frame, text="※見積管理番号または発注番号のどちらか一方を入力してください", 
+note_label = tk.Label(left_frame, text="※見積管理番号・発注番号・受注番号のいずれか1つだけ入力してください", 
                      font=("Arial", 9), fg="blue")
 note_label.pack(pady=(0, 10), anchor='w')
 
@@ -6121,13 +6304,13 @@ missing_qr_display_label.pack(padx=20, pady=20)
 # 使用方法の説明
 help_text_tab3 = """
 【使用方法】
-1. 見積管理番号または発注番号のどちらか一方を入力
+1. 見積管理番号・発注番号・受注番号のいずれか1つを入力
 2. 行番号を入力
 3. 数量を入力（1～99の範囲）
 4. 「QRコードを生成」ボタンを押す
 
 【注意事項】
-・見積管理番号と発注番号は両方入力しないでください
+・見積管理番号・発注番号・受注番号は同時入力しないでください
 ・数量は必須です（空欄不可）
 """
 
@@ -6137,7 +6320,7 @@ help_label_tab3.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
 
 # タブ4（梱包依頼閲覧）
 tab4 = ttk.Frame(tab_control)
-tab_control.add(tab4, text='梱包依頼閲覧')
+tab_control.add(tab4, text='梱包依頼閲覧＆削除')
 
 frame4 = tk.Frame(tab4, padx=20, pady=20)
 frame4.pack(fill='both', expand=True)
@@ -6150,12 +6333,14 @@ tk.Label(view_search_frame, text="検索方法:").pack(side=tk.LEFT)
 Radiobutton(view_search_frame, text="受注番号", variable=search_method_view_var, value="order_number").pack(side=tk.LEFT, padx=5)
 Radiobutton(view_search_frame, text="見積管理番号", variable=search_method_view_var, value="estimate_no").pack(side=tk.LEFT)
 
-# 入力ラベル＆エントリー
+# 入力欄＋検索ボタン
 view_input_label_var = StringVar(value="受注番号:")
-view_input_label = Label(frame4, textvariable=view_input_label_var)
-view_input_label.pack(anchor='w')
-view_input_entry = Entry(frame4, width=30)
-view_input_entry.pack(anchor='w', pady=(0,10))
+view_input_frame = tk.Frame(frame4)
+view_input_frame.pack(anchor='w', fill='x', pady=(0, 10))
+view_input_label = Label(view_input_frame, textvariable=view_input_label_var)
+view_input_label.pack(side=tk.LEFT)
+view_input_entry = Entry(view_input_frame, width=30)
+view_input_entry.pack(side=tk.LEFT, padx=5)
 
 def update_view_input_label(*args):
     if search_method_view_var.get() == "order_number":
@@ -6165,8 +6350,17 @@ def update_view_input_label(*args):
 search_method_view_var.trace_add("write", update_view_input_label)
 
 # 検索ボタン
-view_button = Button(frame4, text="検索", command=lambda: view_packing_requests())
-view_button.pack(pady=(0,10))
+view_button = Button(view_input_frame, text="検索", command=lambda: view_packing_requests())
+view_button.pack(side=tk.LEFT, padx=8)
+
+# 削除対象選択
+view_result_records = []
+view_target_unique_var = StringVar()
+view_action_frame = tk.Frame(frame4)
+view_action_frame.pack(anchor='w', pady=(0, 10))
+tk.Label(view_action_frame, text="削除対象（事前梱包依頼番号）:").pack(side=tk.LEFT)
+view_target_combo = ttk.Combobox(view_action_frame, textvariable=view_target_unique_var, state="readonly", width=40)
+view_target_combo.pack(side=tk.LEFT, padx=5)
 
 # 結果表示用 Treeview
 columns = ('項目','値')
@@ -6200,6 +6394,8 @@ def view_packing_requests():
                        packing_person, packaging_note, item_count, order_amount, packing_detail
                 FROM packing_requests
                 WHERE order_number = ?
+                  AND IFNULL(is_deleted, 0) = 0
+                ORDER BY created_at DESC
             """, (key,))
         else:
             cursor.execute("""
@@ -6209,6 +6405,8 @@ def view_packing_requests():
                        packing_person, packaging_note, item_count, order_amount, packing_detail
                 FROM packing_requests
                 WHERE estimate_no = ?
+                  AND IFNULL(is_deleted, 0) = 0
+                ORDER BY created_at DESC
             """, (key,))
         
         rows = cursor.fetchall()
@@ -6217,10 +6415,20 @@ def view_packing_requests():
         # Treeviewクリア
         for iid in tree.get_children():
             tree.delete(iid)
+        view_target_combo['values'] = []
+        view_target_unique_var.set("")
+        view_result_records.clear()
 
         if not rows:
             messagebox.showinfo("情報", f"該当する梱包依頼が見つかりません：{key}")
             return
+
+        # 削除対象候補を更新
+        unique_numbers = [str(r[0]) for r in rows if r and r[0]]
+        view_result_records.extend(rows)
+        view_target_combo['values'] = unique_numbers
+        if unique_numbers:
+            view_target_unique_var.set(unique_numbers[0])
 
         # 項目名リスト（受注金額を追加）
         display_fields = [
@@ -6254,7 +6462,40 @@ def view_packing_requests():
         with open("error_log.txt", "w", encoding='utf-8') as f:
             f.write(error_message)
         print("エラーログが error_log.txt に保存されました。")
-        
+
+def delete_selected_packing_request():
+    """梱包依頼閲覧タブで選択されたレコードを論理削除する"""
+    unique_number = view_target_unique_var.get().strip()
+    if not unique_number:
+        messagebox.showwarning("警告", "削除対象の事前梱包依頼番号を選択してください。")
+        return
+
+    confirm_message = (
+        f"以下のレコードを削除します。\n\n"
+        f"事前梱包依頼番号: {unique_number}\n\n"
+        f"関連Excelファイルは「削除済み」フォルダへ退避します。続行しますか？"
+    )
+    if not messagebox.askyesno("削除確認", confirm_message):
+        return
+
+    success, message = soft_delete_packing_request(unique_number, "")
+    if success:
+        messagebox.showinfo("完了", message)
+        view_packing_requests()
+    else:
+        messagebox.showerror("エラー", message)
+
+delete_button = Button(
+    view_action_frame,
+    text="選択レコードを削除",
+    command=delete_selected_packing_request,
+    bg="lightcoral"
+)
+delete_button.pack(side=tk.LEFT, padx=5)
+
+# タブ3をこの位置で追加（並び順: 新規梱包依頼 → 梱包依頼閲覧＆削除 → 欠品QR）
+tab_control.add(tab3, text='欠品QR')
+
 # タブ5（依頼状況確認）
 tab5 = ttk.Frame(tab_control)
 tab_control.add(tab5, text='依頼状況確認')
@@ -6349,6 +6590,9 @@ help_label.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
 # タブ6（出荷依頼番号QR）
 tab6 = ttk.Frame(tab_control)
 tab_control.add(tab6, text='出荷依頼番号QR')
+
+# タブ2（ファイルを開く機能）を最後に配置
+tab_control.add(tab2, text='ファイルを開く')
 
 frame6 = tk.Frame(tab6, padx=20, pady=20)
 frame6.pack(fill='both', expand=True)
