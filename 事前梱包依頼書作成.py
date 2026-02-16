@@ -39,7 +39,7 @@ import platform
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.3"  # Current application version
+APP_VERSION = "1.0.4"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -843,6 +843,7 @@ def init_database():
         customer_order_no TEXT,
         order_numbers TEXT,
         customer_name TEXT,
+        customer_code TEXT,
         delivery_location TEXT,
         salesperson TEXT,
         packing_person TEXT,
@@ -870,6 +871,9 @@ def init_database():
     # 既存のテーブルにorder_amountカラムが存在しない場合は追加
     if 'order_amount' not in columns:
         cursor.execute("ALTER TABLE packing_requests ADD COLUMN order_amount REAL")
+    # 既存のテーブルにcustomer_codeカラムが存在しない場合は追加
+    if 'customer_code' not in columns:
+        cursor.execute("ALTER TABLE packing_requests ADD COLUMN customer_code TEXT")
 
     # 既存のテーブルにweightカラムが存在しない場合は追加
     if 'weight' not in columns:
@@ -1071,10 +1075,10 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df, use_batc
         cursor.execute("""
         INSERT OR REPLACE INTO packing_requests
         (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no,
-         order_numbers, customer_name, delivery_location, salesperson, packing_person,
+         order_numbers, customer_name, customer_code, delivery_location, salesperson, packing_person,
          packaging_note, exclude_inos, created_at, details, item_count, order_amount, weight, packing_detail,
          output_file_path, is_deleted, deleted_at, deleted_by, delete_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             header_info['unique_number'],
             header_info['order_no'],
@@ -1084,6 +1088,7 @@ def save_packing_request_with_detailed_feedback(header_info, detail_df, use_batc
             header_info['customer_order_no'],
             header_info['order_numbers'],
             header_info['customer_name'],
+            header_info.get('customer_code', ''),
             header_info['delivery_location'],
             header_info['salesperson'],
             header_info['packing_person'],
@@ -1208,10 +1213,10 @@ def save_packing_request(header_info, detail_df):
     cursor.execute("""
     INSERT OR REPLACE INTO packing_requests
     (unique_number, order_number, deadline, estimate_no, ship_name, customer_order_no, 
-     order_numbers, customer_name, delivery_location, salesperson, packing_person, 
+     order_numbers, customer_name, customer_code, delivery_location, salesperson, packing_person, 
      packaging_note, exclude_inos, created_at, details, item_count, weight, packing_detail,
      output_file_path, is_deleted, deleted_at, deleted_by, delete_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header_info['unique_number'],
         header_info['order_no'],
@@ -1221,6 +1226,7 @@ def save_packing_request(header_info, detail_df):
         header_info['customer_order_no'],
         header_info['order_numbers'],
         header_info['customer_name'],
+        header_info.get('customer_code', ''),
         header_info['delivery_location'],
         header_info['salesperson'],
         header_info['packing_person'],
@@ -1300,27 +1306,28 @@ def soft_delete_packing_request(unique_number, delete_reason=""):
         if int(is_deleted) == 1:
             return False, f"事前梱包依頼番号 [{unique_number}] は既に削除済みです。"
 
+        resolved_output_file_path = resolve_output_file_path_for_current_pc(output_file_path, packing_person)
         moved_path = ""
         file_status_note = "関連ファイルなし"
 
         # 出力ファイルが存在する場合は「削除済み」フォルダへ退避
-        if output_file_path and os.path.exists(output_file_path):
-            output_dir = os.path.dirname(output_file_path)
+        if resolved_output_file_path and os.path.exists(resolved_output_file_path):
+            output_dir = os.path.dirname(resolved_output_file_path)
             archive_dir = os.path.join(output_dir, "削除済み")
             os.makedirs(archive_dir, exist_ok=True)
 
-            src_name = os.path.basename(output_file_path)
+            src_name = os.path.basename(resolved_output_file_path)
             dst_path = os.path.join(archive_dir, src_name)
             if os.path.exists(dst_path):
                 base, ext = os.path.splitext(src_name)
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 dst_path = os.path.join(archive_dir, f"{base}_deleted_{stamp}{ext}")
 
-            shutil.move(output_file_path, dst_path)
+            shutil.move(resolved_output_file_path, dst_path)
             moved_path = dst_path
             file_status_note = f"ファイル退避先: {dst_path}"
-        elif output_file_path:
-            file_status_note = f"元ファイル未検出: {output_file_path}"
+        elif resolved_output_file_path:
+            file_status_note = f"元ファイル未検出: {resolved_output_file_path}"
 
         deleted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         deleted_by = getuser()
@@ -1334,7 +1341,7 @@ def soft_delete_packing_request(unique_number, delete_reason=""):
             delete_reason = ?,
             output_file_path = ?
         WHERE unique_number = ?
-        """, (deleted_at, deleted_by, reason, moved_path or output_file_path, unique_number))
+        """, (deleted_at, deleted_by, reason, moved_path or resolved_output_file_path, unique_number))
 
         conn.commit()
         return True, f"事前梱包依頼番号 [{unique_number}] を削除しました。\n{file_status_note}"
@@ -3210,39 +3217,63 @@ def get_save_path_for_packing_person(packing_person):
     """
     選択された梱包担当者に応じた候補フォルダのうち、存在するパスを返します。
     """
-    username = getuser()
-    candidates = []
-    if packing_person == "11_細田":
-        candidates = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\11_細田",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\11_細田",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\11_細田"
-        ]
-    elif packing_person == "12_平松":
-        candidates = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\12_平松",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\12_平松",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\12_平松"
-        ]
-    elif packing_person == "13_坂上":
-        candidates = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\13_坂上",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\13_坂上",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\13_坂上"
-        ]
-    elif packing_person == "16_土田":
-        candidates = [
-            f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\16_土田",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\16_土田",
-            f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\16_土田"
-        ]
-    else:
-        raise ValueError("無効な梱包担当者です。")
-    
+    candidates = get_packing_person_path_candidates(packing_person)
     for path in candidates:
         if os.path.exists(path):
             return path
     raise FileNotFoundError("該当の保存先フォルダが見つかりません。候補: " + ", ".join(candidates))
+
+
+def get_packing_person_path_candidates(packing_person, filename=None):
+    """
+    梱包担当者に応じた保存先候補パス（3パターン）を返します。
+    filename を指定した場合は各候補フォルダ配下のファイルパスを返します。
+    """
+    username = getuser()
+    suffix = ""
+    if packing_person == "11_細田":
+        suffix = "11_細田"
+    elif packing_person == "12_平松":
+        suffix = "12_平松"
+    elif packing_person == "13_坂上":
+        suffix = "13_坂上"
+    elif packing_person == "16_土田":
+        suffix = "16_土田"
+    else:
+        raise ValueError("無効な梱包担当者です。")
+
+    base_candidates = [
+        f"C:\\Users\\{username}\\OneDrive - 東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\{suffix}",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\{suffix}",
+        f"C:\\Users\\{username}\\東邦ヤンマーテック株式会社\\CR推進本部 - CR推進本部フォルダ\\06_社内管理資料\\miraimiru移行関連\\フォルダ共有テスト\\現場用\\事前梱包依頼書\\{suffix}"
+    ]
+
+    if filename:
+        return [os.path.join(base, filename) for base in base_candidates]
+    return base_candidates
+
+
+def resolve_output_file_path_for_current_pc(output_file_path, packing_person):
+    """
+    output_file_path の実体が現PCにない場合、梱包担当者の3候補パスで存在する実体を解決します。
+    """
+    if output_file_path and os.path.exists(output_file_path):
+        return output_file_path
+
+    filename = os.path.basename(output_file_path) if output_file_path else ""
+    if not filename:
+        return output_file_path
+
+    try:
+        candidate_paths = get_packing_person_path_candidates(packing_person, filename=filename)
+    except Exception:
+        return output_file_path
+
+    for candidate in candidate_paths:
+        if os.path.exists(candidate):
+            return candidate
+
+    return candidate_paths[0] if candidate_paths else output_file_path
 
 
 def process_single_packing_request(row_data, use_batch_connection=False):
@@ -3552,6 +3583,7 @@ def process_single_packing_request(row_data, use_batch_connection=False):
 
         # 一時ファイルをOneDriveフォルダにコピー
         shutil.copy2(temp_path, form_output_path)
+        resolved_output_path = resolve_output_file_path_for_current_pc(form_output_path, packing_person)
 
         # 一時ファイルを削除
         try:
@@ -3587,13 +3619,14 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             "customer_order_no": header_row['客注番号'],
             "order_numbers": order_numbers_str,
             "customer_name": header_row['得意先名'],
+            "customer_code": header_row.get('得意先', ''),
             "delivery_location": header_row['受渡場所名'],
             "salesperson": header_row['社員名'],
             "packing_person": packing_person,
             "packaging_note": packaging_note,
             "order_amount": total_order_amount,
             "packing_detail": 1 if packing_detail_requested else 0,
-            "output_file_path": form_output_path
+            "output_file_path": resolved_output_path
         }
         if excluded_ino:
             header_info["exclude_inos"] = excluded_ino
