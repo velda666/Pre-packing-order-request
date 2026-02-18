@@ -35,12 +35,30 @@ from reportlab.pdfbase.ttfonts import TTFont
 from PyPDF2 import PdfWriter, PdfReader
 import io
 import platform
+import sys
+import ctypes
 
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.6"  # Current application version
+APP_VERSION = "1.0.7"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
+
+
+def minimize_console_window():
+    """
+    Windows実行時のみ、起動したコンソールウィンドウを最小化します。
+    """
+    try:
+        if sys.platform != "win32":
+            return
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            SW_MINIMIZE = 6
+            ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)
+    except Exception:
+        # コンソール最小化に失敗してもアプリ本体は継続起動する
+        pass
 
 
 def get_update_folder_path():
@@ -6158,6 +6176,7 @@ def search_shipment_status():
 # -------------------------------------------------
 # ▼ GUI作成（タブ付きインターフェース）
 # -------------------------------------------------
+minimize_console_window()
 root = tk.Tk()
 root.title(f"{APP_NAME} v{APP_VERSION}")
 
