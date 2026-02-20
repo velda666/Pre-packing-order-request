@@ -41,7 +41,7 @@ import ctypes
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.7"  # Current application version
+APP_VERSION = "1.0.8"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -733,6 +733,57 @@ def query_order_by_estimate_no(estimate_no):
         df = pd.read_sql_query(query, conn, params=(estimate_no,), dtype=str)
         df = df.fillna('')
         return df
+    finally:
+        conn.close()
+
+
+COMMON_PERSON_TO_PACKING_PERSON = {
+    '細田宗之介': '11_細田',
+    '坂上敦士': '13_坂上',
+    '平松良太': '12_平松',
+    '土田周平': '16_土田'
+}
+
+
+def normalize_person_name(name):
+    """氏名の空白（半角/全角）を除去して比較しやすい形式にします。"""
+    if name is None:
+        return ''
+    return ''.join(str(name).replace('\u3000', ' ').split())
+
+
+def query_common_person_name(input_value, search_method):
+    """
+    入力番号（受注番号 or 見積管理番号）に対応する共通項目2名を取得します。
+    一致データが複数ある場合は、最初に見つかった非空の値を返します。
+    """
+    normalized_input = clean_input(str(input_value)).strip()
+    if not normalized_input:
+        return ''
+
+    if search_method == '受注番号':
+        where_clause = '"受注番号" = ?'
+    elif search_method == '見積管理番号':
+        where_clause = '"取込伝票番号" = ?'
+    else:
+        return ''
+
+    db_path = get_order_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        query = f'''
+            SELECT "共通項目2名"
+            FROM order_data
+            WHERE {where_clause}
+              AND TRIM(COALESCE("共通項目2名", '')) <> ''
+            LIMIT 1
+        '''
+        cursor = conn.cursor()
+        cursor.execute(query, (normalized_input,))
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return ''
+        return str(row[0]).strip()
     finally:
         conn.close()
 
@@ -2785,7 +2836,10 @@ class PackingRowDialog:
 
         self.number_var.trace_add("write", self._enforce_os_packing_detail)
         self.search_method_var.trace_add("write", self._enforce_os_packing_detail)
+        self.number_var.trace_add("write", self._auto_select_packing_person)
+        self.search_method_var.trace_add("write", self._auto_select_packing_person)
         self._enforce_os_packing_detail()
+        self._auto_select_packing_person()
         
         # ダイアログを中央に配置
         self.dialog.update_idletasks()
@@ -2802,6 +2856,23 @@ class PackingRowDialog:
             self.packing_detail_check.config(state='disabled')
         else:
             self.packing_detail_check.config(state='normal')
+
+    def _auto_select_packing_person(self, *args):
+        """番号入力時にorder_data.dbの共通項目2名から梱包担当者を自動選択します。"""
+        try:
+            input_value = self.number_var.get().strip()
+            if not input_value:
+                return
+
+            common_person = query_common_person_name(input_value, self.search_method_var.get())
+            if not common_person:
+                return
+
+            mapped_person = COMMON_PERSON_TO_PACKING_PERSON.get(normalize_person_name(common_person), '')
+            if mapped_person:
+                self.person_var.set(mapped_person)
+        except Exception as e:
+            print(f"梱包担当者の自動選択でエラー: {e}")
     
     def on_ok(self):
         """OKボタンが押された時の処理"""
