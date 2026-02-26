@@ -39,9 +39,10 @@ import sys
 import ctypes
 
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
+#260226：特定ユーザー（CR_Kanamori, CR_kusunoki, Ebisuno_）の新規作成時、「受注残が0、かつ梱包可能数が0のアイテムも出力する」のデフォルトをオフに変更
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.9"  # Current application version
+APP_VERSION = "1.0.10"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -2830,7 +2831,13 @@ class PackingRowDialog:
                                    variable=self.exclude_var, font=("Arial", 10))
         exclude_check.pack(anchor='w', pady=3)
         
-        self.zero_packing_var = IntVar(value=1 if not edit_data or edit_data.get('受注残0出力') == 'はい' else 0)
+        # 特定ユーザーは新規作成時に「受注残が0、かつ梱包可能数が0のアイテムも出力する」をデフォルトでオフにする
+        # 無効化するには次の行をコメントアウトしてください
+        _zero_off_users = ["CR_Kanamori", "CR_kusunoki", "Ebisuno_"]  # この行をコメントアウトで無効化
+        self.zero_packing_var = IntVar(
+            value=0 if (not edit_data and getuser() in locals().get('_zero_off_users', []))
+            else (1 if not edit_data or edit_data.get('受注残0出力') == 'はい' else 0)
+        )
         zero_check = Checkbutton(options_frame, text="受注残が0、かつ梱包可能数が0のアイテムも出力する", 
                                 variable=self.zero_packing_var, font=("Arial", 10))
         zero_check.pack(anchor='w', pady=3)
