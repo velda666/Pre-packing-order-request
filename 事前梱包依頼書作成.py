@@ -41,7 +41,7 @@ import ctypes
 #250616：依頼報告書の明細画面でのスクロールの改善、入力内容の記憶、関連出荷指示番号の全表示、統合での分母エラー表示を調査中
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.8"  # Current application version
+APP_VERSION = "1.0.9"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -441,6 +441,7 @@ def load_inventory_data_from_db():
     """
     db_path = get_inventory_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         # Only select required columns for better performance
         query = 'SELECT "商品コード", "ロット番号", "棚番１" FROM TYT01_02在庫一覧'
@@ -457,6 +458,7 @@ def load_order_data_from_db():
     """
     db_path = get_order_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         # Only select required columns for better performance
         columns = [
@@ -481,6 +483,7 @@ def load_purchase_order_data_from_db():
     """
     db_path = get_purchase_order_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         # Only select required columns for better performance
         columns = ['発注番号', '明細_商品コード', '明細_共通項目2', '受注番号']
@@ -499,6 +502,7 @@ def load_arrival_data_from_db():
     """
     db_path = get_arrival_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         # Only select required columns for better performance
         columns = [
@@ -560,6 +564,7 @@ def is_os_case_by_estimate_no(estimate_no):
 
     db_path = get_order_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -712,6 +717,7 @@ def query_order_by_number(order_number):
     """
     db_path = get_order_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         query = "SELECT * FROM order_data WHERE 受注番号 = ?"
         df = pd.read_sql_query(query, conn, params=(order_number,), dtype=str)
@@ -728,6 +734,7 @@ def query_order_by_estimate_no(estimate_no):
     """
     db_path = get_order_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         query = "SELECT * FROM order_data WHERE 取込伝票番号 = ?"
         df = pd.read_sql_query(query, conn, params=(estimate_no,), dtype=str)
@@ -770,6 +777,7 @@ def query_common_person_name(input_value, search_method):
 
     db_path = get_order_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         query = f'''
             SELECT "共通項目2名"
@@ -797,6 +805,7 @@ def query_purchase_order_by_order_numbers(order_numbers):
 
     db_path = get_purchase_order_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         placeholders = ','.join(['?' for _ in order_numbers])
         query = f"SELECT * FROM purchase_order_data WHERE 受注番号 IN ({placeholders})"
@@ -816,6 +825,7 @@ def query_arrival_by_order_numbers(order_numbers):
 
     db_path = get_arrival_db_path()
     conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
     try:
         placeholders = ','.join(['?' for _ in order_numbers])
         query = f"SELECT * FROM arrival_data WHERE 発注番号 IN ({placeholders})"
@@ -909,6 +919,7 @@ def init_database():
     """
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
 
     # 梱包依頼書情報テーブル
@@ -981,6 +992,7 @@ def init_database():
     # ===== 生成済み番号DBの初期化と移行 =====
     gen_db_path = get_generated_numbers_db_path()
     gen_conn = sqlite3.connect(gen_db_path)
+    gen_conn.execute("PRAGMA journal_mode=WAL;")
     gen_cursor = gen_conn.cursor()
 
     # 新しいDBにテーブル作成
@@ -1028,6 +1040,7 @@ def load_generated_numbers():
     """
     db_path = get_generated_numbers_db_path()
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
     cursor.execute("SELECT number FROM generated_numbers")
@@ -1041,6 +1054,7 @@ def save_generated_number(number):
     """
     db_path = get_generated_numbers_db_path()
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS generated_numbers (number TEXT PRIMARY KEY)")
     cursor.execute("INSERT INTO generated_numbers (number) VALUES (?)", (number,))
@@ -1269,6 +1283,7 @@ def save_packing_request(header_info, detail_df):
     """
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
     
     # 詳細情報をJSON形式に変換
@@ -1332,6 +1347,7 @@ def load_packing_request(unique_number, include_deleted=False):
     """
     db_path = get_db_path()
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
     query = "SELECT * FROM packing_requests WHERE unique_number = ?"
     params = [unique_number]
@@ -1491,6 +1507,7 @@ def get_shipment_numbers_by_order(order_number):
     try:
         db_path = get_packing_list_db_path()
         conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -1515,6 +1532,7 @@ def get_packing_details_by_shipment(shipment_number):
     try:
         db_path = get_packing_list_db_path()
         conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -4075,6 +4093,7 @@ def get_product_weight(product_code):
     try:
         db_path = get_weight_master_db_path()
         conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -6517,6 +6536,7 @@ def view_packing_requests():
         # DBからヘッダ情報のみ取得
         db_path = get_db_path()
         conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         
         if search_method_view_var.get() == "order_number":
