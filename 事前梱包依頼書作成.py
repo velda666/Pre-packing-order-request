@@ -42,7 +42,7 @@ import ctypes
 #260226：特定ユーザー（CR_Kanamori, CR_kusunoki, Ebisuno_）の新規作成時、「受注残が0、かつ梱包可能数が0のアイテムも出力する」のデフォルトをオフに変更
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.10"  # Current application version
+APP_VERSION = "1.0.11"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -3511,6 +3511,9 @@ def process_single_packing_request(row_data, use_batch_connection=False):
         ws['A1'] = "事前：梱包依頼書"
         ws['A1'].font = Font(name='メイリオ', size=22, bold=True)
         ws['A1'].alignment = Alignment(horizontal='left')
+        for r in range(2, 11):
+            ws.row_dimensions[r].height = 36
+        ws.row_dimensions[4].height = 51
         packing_detail_text = "必要" if packing_detail_requested else "なし"
         ws.merge_cells('J1:L2')
         ws['J1'] = f"【梱包明細：{packing_detail_text}】"
@@ -3527,33 +3530,30 @@ def process_single_packing_request(row_data, use_batch_connection=False):
                 ws.cell(row=row_idx, column=col_idx).border = black_emphasis_border
         unique_number = generate_unique_number(use_batch_connection=use_batch_connection)
         ws['A2'] = f"事前梱包依頼番号: {unique_number}"
-        ws['A3'] = f"梱包期限日: {packaging_deadline.strftime('%Y/%m/%d')}"
-        
+
         # 【変更3】Excelヘッダーで「取込伝票番号」を参照
-        ws['A4'] = f"見積管理番号: {header_row['取込伝票番号']}"
-        ws['A5'] = f"船名: {header_row['受注件名']}"
-        ws['A6'] = f"受注番号: {header_row['受注番号']}"
-        ws['A7'] = f"客注番号: {header_row['客注番号']}"
+        ws['A3'] = f"見積管理番号: {header_row['取込伝票番号']}"
         order_numbers = order_df['発注番号'].unique()
         order_numbers = [o for o in order_numbers if o]
         if len(order_numbers) > 1:
             order_numbers_str = ', '.join(order_numbers)
         else:
             order_numbers_str = order_numbers[0] if order_numbers else "発注番号なし"
-        ws['A8'] = f"発注番号: {order_numbers_str}"
-        ws['A9'] = f"得意先名: {header_row['得意先名']}"
-        ws['A10'] = f"受渡場所名: {header_row['受渡場所名']}"
-        ws['A11'] = f"営業担当者: {header_row['社員名']}"
-        ws['A12'] = f"梱包依頼摘要: {packaging_note}"
+        ws['A4'] = f"得意先名: {header_row['得意先名']}"
+        ws['A5'] = f"営業担当者: {header_row['社員名']}"
         if excluded_ino:
-            ws['A13'] = f"出力除外I/no.：{','.join(map(str, excluded_ino))}"
-            ws['A13'].font = Font(name='メイリオ', size=12, bold=True)
-            ws['A13'].alignment = Alignment(horizontal='left')
-        for row_cells in ws['A1:A13']:
+            ws['A6'] = f"出力除外I/no.：{','.join(map(str, excluded_ino))}"
+            ws['A6'].font = Font(name='メイリオ', size=16, bold=True)
+            ws['A6'].alignment = Alignment(horizontal='left')
+        for row_cells in ws['A1:A6']:
             for c in row_cells:
                 c.alignment = Alignment(horizontal='left')
-                if c.row != 1:
-                    c.font = Font(name='メイリオ', size=12, bold=True)
+                if 2 <= c.row <= 5:
+                    c.font = Font(name='メイリオ', size=14, bold=True)
+                elif c.row != 1:
+                    c.font = Font(name='メイリオ', size=16, bold=True)
+        ws.merge_cells('A4:D4')
+        ws['A4'].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
         headers = [
             "QR_L", "I/no._L", "倉庫", "受注数量", "商品コード",
             "商品受注名", "受注残数", "梱包可能数", "ロット番号",
@@ -3567,30 +3567,61 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             bottom=Side(style='thin')
         )
         for col_idx, head_text in enumerate(headers, start=1):
-            cell = ws.cell(row=15, column=col_idx, value=head_text)
+            cell = ws.cell(row=11, column=col_idx, value=head_text)
             cell.font = Font(name='メイリオ', bold=True, size=12)
             cell.alignment = Alignment(horizontal='center', vertical='center')
             cell.border = thin_border
             cell.fill = header_fill
-        def px_to_excel_col_width(px): 
-            return px / 7.0
         col_width_map = {
-            'A': 60,
-            'B': 72,
-            'C': 62,
-            'D': 78,
-            'E': 136,
-            'F': 308,
-            'G': 78,
-            'H': 95,
-            'I': 110,
-            'J': 60,
-            'K': 72,
-            'L': 113
+            'A': 12,
+            'B': 9.38,
+            'C': 10.25,
+            'D': 9.13,
+            'E': 26.5,
+            'F': 43.38,
+            'G': 9.13,
+            'H': 11.25,
+            'I': 18.63,
+            'J': 12,
+            'K': 9.38,
+            'L': 17,
         }
-        for col_letter, px_val in col_width_map.items():
-            ws.column_dimensions[col_letter].width = px_to_excel_col_width(px_val)
-        row_start = 16
+        for col_letter, width in col_width_map.items():
+            ws.column_dimensions[col_letter].width = width
+
+        # 案件情報テーブル（E2:F9）
+        label_fill = PatternFill(patternType='solid', fgColor='D9D9D9')
+        ws.merge_cells('E2:F2')
+        ws['E2'] = '案件情報'
+        ws['E2'].font = Font(name='メイリオ', size=16, bold=True)
+        ws['E2'].alignment = Alignment(horizontal='center', vertical='center')
+        ws['E2'].fill = label_fill
+        for col_idx in range(5, 7):
+            ws.cell(row=2, column=col_idx).border = thin_border
+
+        info_items = [
+            ('受注番号',     header_row['受注番号']),
+            ('発注番号',     order_numbers_str),
+            ('客注番号',     header_row['客注番号']),
+            ('船名',         header_row['受注件名']),
+            ('受渡場所',     header_row['受渡場所名']),
+            ('梱包期限日',   packaging_deadline.strftime('%Y/%m/%d')),
+            ('梱包依頼摘要', packaging_note),
+        ]
+        for i, (label, value) in enumerate(info_items):
+            row = 3 + i
+            e_cell = ws.cell(row=row, column=5, value=label)
+            e_cell.font = Font(name='メイリオ', size=16, bold=True)
+            e_cell.alignment = Alignment(horizontal='center', vertical='center')
+            e_cell.fill = label_fill
+            e_cell.border = thin_border
+
+            f_cell = ws.cell(row=row, column=6, value=value)
+            f_cell.font = Font(name='メイリオ', size=16, bold=True)
+            f_cell.alignment = Alignment(horizontal='left', vertical='center')
+            f_cell.border = thin_border
+
+        row_start = 12
         for row_index, data in enumerate(detail_df.itertuples(index=False), start=row_start):
             warehouse_code = data.明細_倉庫コード
             if warehouse_code in ["TYT01", "TYT02"]:
@@ -3632,8 +3663,8 @@ def process_single_packing_request(row_data, use_batch_connection=False):
                         qr_buffer = BytesIO(qr_left_bytes)
                         qr_buffer.seek(0)  # Read position reset for Excel compatibility
                         img_left = Image(qr_buffer)
-                        img_left.width = 50
-                        img_left.height = 50
+                        img_left.width = 80
+                        img_left.height = 80
                         img_left.anchor = cell_qr_left.coordinate
                         ws.add_image(img_left)
                     else:
@@ -3648,8 +3679,8 @@ def process_single_packing_request(row_data, use_batch_connection=False):
                         qr_buffer = BytesIO(qr_right_bytes)
                         qr_buffer.seek(0)  # Read position reset for Excel compatibility
                         img_right = Image(qr_buffer)
-                        img_right.width = 50
-                        img_right.height = 50
+                        img_right.width = 80
+                        img_right.height = 80
                         img_right.anchor = cell_qr_right.coordinate
                         ws.add_image(img_right)
                     else:
@@ -3667,7 +3698,7 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             ws.cell(row=row_index, column=9, value=lot_number)
             ws.cell(row=row_index, column=11, value=i_no_raw)
             ws.cell(row=row_index, column=12, value=remark_text)
-            ws.row_dimensions[row_index].height = 40
+            ws.row_dimensions[row_index].height = 66
         max_row_used = ws.max_row
         thin_border = Border(
             left=Side(style='thin'),
@@ -3675,12 +3706,12 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             top=Side(style='thin'),
             bottom=Side(style='thin')
         )
-        for row_idx in range(16, max_row_used + 1):
+        for row_idx in range(12, max_row_used + 1):
             for col_idx in range(1, 13):
                 cell = ws.cell(row=row_idx, column=col_idx)
                 cell.border = thin_border
-                cell.font = Font(name='メイリオ', size=12, bold=True)
-                if col_idx in [2, 5, 6, 11]:
+                cell.font = Font(name='メイリオ', size=16, bold=True)
+                if col_idx in [5, 6]:
                     cell.alignment = Alignment(horizontal='left', vertical='center')
                 else:
                     cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -3703,6 +3734,7 @@ def process_single_packing_request(row_data, use_batch_connection=False):
         # OneDrive同期競合を避けるため、一時フォルダに保存してからコピー
         temp_dir = tempfile.gettempdir()
         temp_path = os.path.join(temp_dir, filename)
+        ws.page_margins.top = 2 / 2.54  # 上余白 2cm（インチ変換）
         wb.save(temp_path)
 
         # 一時ファイルをOneDriveフォルダにコピー
