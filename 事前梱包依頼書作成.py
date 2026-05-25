@@ -42,7 +42,7 @@ import ctypes
 #260226：特定ユーザー（CR_Kanamori, CR_kusunoki, Ebisuno_）の新規作成時、「受注残が0、かつ梱包可能数が0のアイテムも出力する」のデフォルトをオフに変更
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.11"  # Current application version
+APP_VERSION = "1.0.12"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -2831,12 +2831,9 @@ class PackingRowDialog:
                                    variable=self.exclude_var, font=("Arial", 10))
         exclude_check.pack(anchor='w', pady=3)
         
-        # 特定ユーザーは新規作成時に「受注残が0、かつ梱包可能数が0のアイテムも出力する」をデフォルトでオフにする
-        # 無効化するには次の行をコメントアウトしてください
-        _zero_off_users = ["CR_Kanamori", "CR_kusunoki", "Ebisuno_"]  # この行をコメントアウトで無効化
+        # 新規作成時は全ユーザーで「受注残が0、かつ梱包可能数が0のアイテムも出力する」をデフォルトでオフにする
         self.zero_packing_var = IntVar(
-            value=0 if (not edit_data and getuser() in locals().get('_zero_off_users', []))
-            else (1 if not edit_data or edit_data.get('受注残0出力') == 'はい' else 0)
+            value=0 if not edit_data else (1 if edit_data.get('受注残0出力') == 'はい' else 0)
         )
         zero_check = Checkbutton(options_frame, text="受注残が0、かつ梱包可能数が0のアイテムも出力する", 
                                 variable=self.zero_packing_var, font=("Arial", 10))
