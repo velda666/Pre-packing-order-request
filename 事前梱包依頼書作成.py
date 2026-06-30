@@ -42,7 +42,7 @@ import ctypes
 #260226：特定ユーザー（CR_Kanamori, CR_kusunoki, Ebisuno_）の新規作成時、「受注残が0、かつ梱包可能数が0のアイテムも出力する」のデフォルトをオフに変更
 
 # ========== バージョン情報 ==========
-APP_VERSION = "1.0.12"  # Current application version
+APP_VERSION = "1.0.13"  # Current application version
 APP_NAME = "事前梱包依頼書管理アプリ"
 
 
@@ -3617,6 +3617,18 @@ def process_single_packing_request(row_data, use_batch_connection=False):
             f_cell.font = Font(name='メイリオ', size=16, bold=True)
             f_cell.alignment = Alignment(horizontal='left', vertical='center')
             f_cell.border = thin_border
+
+        # ── ヘッダー右上：受注番号QRコード ──────────────────────────
+        order_number_for_qr = header_row['受注番号']
+        qr_bytes_header = generate_qr_code(order_number_for_qr)
+        if qr_bytes_header:
+            qr_buf_header = BytesIO(qr_bytes_header)
+            img_header_qr = Image(qr_buf_header)
+            img_header_qr.width = 100   # px
+            img_header_qr.height = 100  # px
+            img_header_qr.anchor = 'J4'  # J1:L2の2行下（梱包明細ラベルとの間に余白を確保）
+            ws.add_image(img_header_qr)
+        # ─────────────────────────────────────────────────────────────
 
         row_start = 12
         for row_index, data in enumerate(detail_df.itertuples(index=False), start=row_start):
